@@ -17,27 +17,29 @@ export default function HomeScreen() {
           <Text style={styles.buttonSub}>Search available carpools</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.offerButton} onPress={() => router.push('/search')}>
+        <TouchableOpacity style={styles.offerButton} onPress={() => router.push('/offer')}>
           <Text style={styles.buttonIcon}>🚗</Text>
-          <Text style={styles.buttonTitle}>Offer a Ride</Text>
-          <Text style={styles.buttonSub}>Share your commute</Text>
+          <Text style={styles.offerButtonTitle}>Offer a Ride</Text>
+          <Text style={styles.offerButtonSub}>Share your commute</Text>
         </TouchableOpacity>
       </View>
 
-      <View style={styles.statsRow}>
-        <View style={styles.statBox}>
-          <Text style={styles.statNumber}>0</Text>
-          <Text style={styles.statLabel}>Rides Taken</Text>
+      <TouchableOpacity onPress={() => router.push('/myrides')}>
+        <View style={styles.statsRow}>
+          <View style={styles.statBox}>
+            <Text style={styles.statNumber}>0</Text>
+            <Text style={styles.statLabel}>Rides Taken</Text>
+          </View>
+          <View style={styles.statBox}>
+            <Text style={styles.statNumber}>0</Text>
+            <Text style={styles.statLabel}>Rides Offered</Text>
+          </View>
+          <View style={styles.statBox}>
+            <Text style={styles.statNumber}>₹0</Text>
+            <Text style={styles.statLabel}>Saved</Text>
+          </View>
         </View>
-        <View style={styles.statBox}>
-          <Text style={styles.statNumber}>0</Text>
-          <Text style={styles.statLabel}>Rides Offered</Text>
-        </View>
-        <View style={styles.statBox}>
-          <Text style={styles.statNumber}>₹0</Text>
-          <Text style={styles.statLabel}>Saved</Text>
-        </View>
-      </View>
+      </TouchableOpacity>
     </SafeAreaView>
   );
 }
@@ -53,6 +55,8 @@ const styles = StyleSheet.create({
   buttonIcon: { fontSize: 32, marginBottom: 8 },
   buttonTitle: { fontSize: 20, fontWeight: 'bold', color: '#333' },
   buttonSub: { fontSize: 14, color: '#666', marginTop: 4 },
+  offerButtonTitle: { fontSize: 20, fontWeight: 'bold', color: '#fff' },
+  offerButtonSub: { fontSize: 14, color: '#fff', opacity: 0.85, marginTop: 4 },
   statsRow: { flexDirection: 'row', margin: 20, backgroundColor: '#fff', borderRadius: 16, padding: 20, justifyContent: 'space-around', elevation: 2 },
   statBox: { alignItems: 'center' },
   statNumber: { fontSize: 24, fontWeight: 'bold', color: '#1a73e8' },
