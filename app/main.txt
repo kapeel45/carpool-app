@@ -1,0 +1,16 @@
+//command save to future use
+//to start docker with directus
+
+    docker run -d \
+  --name carpool-directus \
+  -p 8055:8055 \
+  -e SECRET=carpool-secret-key-pune-2024 \
+  -e ADMIN_EMAIL=admin@carpool.com \
+  -e ADMIN_PASSWORD=Carpool@123 \
+  -e DB_CLIENT=sqlite3 \
+  -e DB_FILENAME=/directus/database/data.db \
+  -v carpool-db:/directus/database \
+  directus/directus
+
+//check if running
+  docker ps
