@@ -1,8 +1,9 @@
-import { SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
+import { Alert, SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 export default function BookingScreen() {
     const router = useRouter();
+
 
     const handleCancel = () => {
         Alert.alert(
@@ -10,8 +11,8 @@ export default function BookingScreen() {
             'Are you sure you want to cancel this booking?',
             [
                 { text: 'No, Keep It', style: 'cancel' },
-                { 
-                    text: 'Yes, Cancel', 
+                {
+                    text: 'Yes, Cancel',
                     style: 'destructive',
                     onPress: () => {
                         Alert.alert('Cancelled', 'Your booking has been cancelled.', [
@@ -82,7 +83,7 @@ export default function BookingScreen() {
                             <Text style={styles.driverMeta}>⭐ 4.8 • Honda City • MH12 AB 1234</Text>
                         </View>
                     </View>
-                    <TouchableOpacity 
+                    <TouchableOpacity
                         style={styles.callButton}
                         onPress={() => Alert.alert('Calling Driver', 'Connecting call to Rahul Sharma...')}
                     >
