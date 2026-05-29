@@ -1,8 +1,10 @@
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Alert, SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import RideMap from './components/RideMap';
 
 export default function BookingScreen() {
     const router = useRouter();
+    const { from, to, time, price, driver, seats, rideId } = useLocalSearchParams();
 
 
     const handleCancel = () => {
@@ -52,7 +54,11 @@ export default function BookingScreen() {
                     </View>
 
                     <View style={styles.divider} />
-
+                    <RideMap
+                        fromLocation={from as string}
+                        toLocation={to as string}
+                        height={220}
+                    />
                     <View style={styles.row}>
                         <Text style={styles.rowIcon}>🔴</Text>
                         <View>

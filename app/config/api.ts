@@ -20,3 +20,8 @@ export const createRide = async (rideData: any) => {
     const response = await api.post('/items/rides', rideData);
     return response.data.data;
 };
+
+export const getFuelPrices = async () => {
+    const response = await api.get('/items/fuel_prices');
+    return response.data.data;
+};

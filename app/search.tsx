@@ -1,6 +1,7 @@
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
-import { ActivityIndicator, FlatList, SafeAreaView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, FlatList, SafeAreaView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import RideMap from './components/RideMap';
 import { getRides } from './config/api';
 
 const styles = StyleSheet.create({
@@ -17,7 +18,7 @@ const styles = StyleSheet.create({
     driverName: { fontSize: 16, fontWeight: 'bold', color: '#333' },
     price: { fontSize: 18, fontWeight: 'bold', color: '#1a73e8' },
     rideMiddle: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 },
-    route: { fontSize: 14, color: '#555' },
+    route: { fontSize: 14, color: '#555', flex: 1, flexWrap: 'wrap' },
     rideBottom: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
     meta: { fontSize: 13, color: '#666' },
     bookButton: { backgroundColor: '#1a73e8', paddingHorizontal: 20, paddingVertical: 8, borderRadius: 8 },
@@ -35,14 +36,41 @@ export default function SearchScreen() {
     const [rides, setRides] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
 
+    useEffect(() => {
+        const loadAllRides = async () => {
+            setLoading(true);
+            try {
+                const data = await getRides();
+                setRides(data);
+                setSearched(true);
+            } catch (error) {
+                console.error('Error loading rides:', error);
+            } finally {
+                setLoading(false);
+            }
+        };
+        loadAllRides();
+    }, []);
+
     const handleSearch = async () => {
+        if (!from || !to) {
+            Alert.alert('Missing Info', 'Please enter both pickup and destination.');
+            return;
+        }
         setLoading(true);
         try {
             const data = await getRides();
-            setRides(data);
+            const filtered = data.filter((ride: any) => {
+                const rideFrom = ride.from_location?.toLowerCase() || '';
+                const rideTo = ride.to_location?.toLowerCase() || '';
+                const searchFrom = from.toLowerCase().trim();
+                const searchTo = to.toLowerCase().trim();
+                return rideFrom.includes(searchFrom) && rideTo.includes(searchTo);
+            });
+            setRides(filtered);
             setSearched(true);
         } catch (error) {
-            console.error('Error fetching rides:', error);
+            Alert.alert('Error', 'Could not fetch rides. Try again.');
         } finally {
             setLoading(false);
         }
@@ -123,6 +151,12 @@ export default function SearchScreen() {
                                     <Text style={styles.bookText}>Book</Text>
                                 </TouchableOpacity>
                             </View>
+                            <RideMap
+                                fromLocation={item.from_location}
+                                toLocation={item.to_location}
+                                viaPoints={item.via_points ? item.via_points.split(',') : []}
+                                height={150}
+                            />
                         </TouchableOpacity>
                     )}
                 />

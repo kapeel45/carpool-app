@@ -1,8 +1,24 @@
 import { useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
 import { SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { getFuelPrices } from '../config/api';
 
 export default function HomeScreen() {
   const router = useRouter();
+  const [fuelPrices, setFuelPrices] = useState<any[]>([]);
+
+  useEffect(() => {
+    const loadFuelPrices = async () => {
+      try {
+        const data = await getFuelPrices();
+        setFuelPrices(data);
+      } catch (error) {
+        console.error('Error loading fuel prices:', error);
+      }
+    };
+    loadFuelPrices();
+  }, []);
+
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
@@ -39,12 +55,46 @@ export default function HomeScreen() {
             <Text style={styles.statLabel}>Saved</Text>
           </View>
         </View>
+        <View style={styles.fuelContainer}>
+          <Text style={styles.fuelTitle}>⛽ Pune Fuel Prices</Text>
+          <View style={styles.fuelRow}>
+            {fuelPrices.map((fuel: any) => (
+              <View
+                key={fuel.id}
+                style={[
+                  styles.fuelCard,
+                  fuel.fuel_type === 'Petrol' && styles.petrolCard,
+                  fuel.fuel_type === 'Diesel' && styles.dieselCard,
+                  fuel.fuel_type === 'CNG' && styles.cngCard,
+                ]}
+              >
+                <Text style={styles.fuelIcon}>
+                  {fuel.fuel_type === 'Petrol' ? '🔴' : fuel.fuel_type === 'Diesel' ? '🟡' : '🟢'}
+                </Text>
+                <Text style={styles.fuelType}>{fuel.fuel_type}</Text>
+                <Text style={styles.fuelPrice}>₹{fuel.price}</Text>
+                <Text style={styles.fuelUpdated}>{fuel.last_updated}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
       </TouchableOpacity>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  fuelContainer: { margin: 20, marginTop: 0 },
+  fuelTitle: { fontSize: 16, fontWeight: 'bold', color: '#333', marginBottom: 12 },
+  fuelRow: { flexDirection: 'row', gap: 10 },
+  fuelCard: { flex: 1, borderRadius: 16, padding: 14, alignItems: 'center', elevation: 2 },
+  petrolCard: { backgroundColor: '#fff0f0' },
+  dieselCard: { backgroundColor: '#fffde7' },
+  cngCard: { backgroundColor: '#f0fff4' },
+  fuelIcon: { fontSize: 24, marginBottom: 4 },
+  fuelType: { fontSize: 13, fontWeight: '600', color: '#333' },
+  fuelPrice: { fontSize: 18, fontWeight: 'bold', color: '#1a73e8', marginTop: 4 },
+  fuelUpdated: { fontSize: 10, color: '#999', marginTop: 4 },
   container: { flex: 1, backgroundColor: '#f5f5f5' },
   header: { padding: 24, backgroundColor: '#1a73e8', paddingTop: 48 },
   greeting: { color: '#fff', fontSize: 16, opacity: 0.9 },
