@@ -6,7 +6,6 @@ const GOOGLE_MAPS_API_KEY = 'AIzaSyBhjfn1ZfqiR4zSGT8clhe2Yc-X8FYifF8';
 export const calculateSuggestedPrice = async (
     from: string,
     to: string,
-    seats: number,
     petrolPrice: number
 ): Promise<number> => {
     try {
@@ -17,11 +16,10 @@ export const calculateSuggestedPrice = async (
         if (data.routes && data.routes.length > 0) {
             const distanceMeters = data.routes[0].legs[0].distance.value;
             const distanceKm = distanceMeters / 1000;
-            const mileage = 15; // km per litre
+            const mileage = 15;
             const litresUsed = distanceKm / mileage;
             const fuelCost = litresUsed * petrolPrice;
-            const totalWithMargin = fuelCost * 1.2; // 20% margin
-            const pricePerSeat = Math.ceil(totalWithMargin / seats);
+            const pricePerSeat = Math.ceil(fuelCost * 1.2);
             return pricePerSeat;
         }
         return 0;

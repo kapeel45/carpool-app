@@ -41,7 +41,7 @@ export default function OfferRideScreen() {
                 setCalculating(true);
                 try {
                     const suggested = await calculateSuggestedPrice(
-                        from, to, parseInt(seats), petrolPrice
+                        from, to, petrolPrice
                     );
                     if (suggested > 0) {
                         setSuggestedPrice(suggested);
@@ -190,7 +190,7 @@ export default function OfferRideScreen() {
                                 💡 Suggested: ₹{suggestedPrice} per seat
                             </Text>
                             <Text style={styles.suggestionSub}>
-                                Based on ₹{petrolPrice}/L petrol • 15km/L mileage
+                                Based on ₹{petrolPrice}/L petrol • 15km/L mileage • flat per seat
                             </Text>
                         </View>
                     )}
