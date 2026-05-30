@@ -28,7 +28,21 @@ export default function BookingScreen() {
 
     return (
         <SafeAreaView style={styles.container}>
-            <ScrollView contentContainerStyle={styles.scrollContent}>
+            {/* Map at top - outside ScrollView */}
+            <View style={styles.mapContainer}>
+                <RideMap
+                    fromLocation={from as string}
+                    toLocation={to as string}
+                    height={200}
+                />
+            </View>
+
+            <ScrollView
+                contentContainerStyle={styles.scrollContent}
+                keyboardShouldPersistTaps="handled"
+                nestedScrollEnabled={true}
+                scrollEnabled={true}
+            >
                 <View style={styles.header}>
                     <TouchableOpacity onPress={() => router.replace('/')} style={styles.backButton}>
                         <Text style={styles.backText}>← Home</Text>
@@ -52,13 +66,7 @@ export default function BookingScreen() {
                             <Text style={styles.rowValue}>Wakad, Pune</Text>
                         </View>
                     </View>
-
-                    <View style={styles.divider} />
-                    <RideMap
-                        fromLocation={from as string}
-                        toLocation={to as string}
-                        height={220}
-                    />
+                    <View style={styles.divider}></View>
                     <View style={styles.row}>
                         <Text style={styles.rowIcon}>🔴</Text>
                         <View>
@@ -66,9 +74,7 @@ export default function BookingScreen() {
                             <Text style={styles.rowValue}>Hinjewadi Phase 1</Text>
                         </View>
                     </View>
-
                     <View style={styles.divider} />
-
                     <View style={styles.row}>
                         <Text style={styles.rowIcon}>🕐</Text>
                         <View>
@@ -149,5 +155,6 @@ const styles = StyleSheet.create({
     paymentPrice: { fontSize: 16, fontWeight: 'bold', color: '#333' },
     paymentStatus: { fontSize: 14, fontWeight: 'bold', color: '#2e7d32' },
     cancelButton: { marginHorizontal: 20, marginTop: 8, borderWidth: 1.5, borderColor: '#d32f2f', borderRadius: 12, padding: 16, alignItems: 'center' },
+    mapContainer: { height: 200, zIndex: 0 },
     cancelButtonText: { color: '#d32f2f', fontSize: 16, fontWeight: 'bold' },
 });

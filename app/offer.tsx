@@ -1,7 +1,10 @@
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
-import { ActivityIndicator, Alert, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { createRide } from './config/api';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, SafeAreaView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
+import LocationInput from './components/LocationInput';
+import { calculateSuggestedPrice, createRide, getFuelPrices } from './config/api';
 
 export default function OfferRideScreen() {
 
@@ -13,6 +16,46 @@ export default function OfferRideScreen() {
     const [time, setTime] = useState('');
     const [seats, setSeats] = useState('2');
     const [price, setPrice] = useState('');
+    const [showTimePicker, setShowTimePicker] = useState(false);
+    const [selectedTime, setSelectedTime] = useState(new Date());
+    const [suggestedPrice, setSuggestedPrice] = useState<number | null>(null);
+    const [calculating, setCalculating] = useState(false);
+    const [petrolPrice, setPetrolPrice] = useState(104.89);
+
+    useEffect(() => {
+        const loadPetrolPrice = async () => {
+            try {
+                const prices = await getFuelPrices();
+                const petrol = prices.find((p: any) => p.fuel_type === 'Petrol');
+                if (petrol) setPetrolPrice(petrol.price);
+            } catch (error) {
+                console.error('Could not load petrol price');
+            }
+        };
+        loadPetrolPrice();
+    }, []);
+
+    useEffect(() => {
+        const autoCalculate = async () => {
+            if (from && to && seats) {
+                setCalculating(true);
+                try {
+                    const suggested = await calculateSuggestedPrice(
+                        from, to, parseInt(seats), petrolPrice
+                    );
+                    if (suggested > 0) {
+                        setSuggestedPrice(suggested);
+                        setPrice(suggested.toString());
+                    }
+                } catch (error) {
+                    console.error('Price calculation failed');
+                } finally {
+                    setCalculating(false);
+                }
+            }
+        };
+        autoCalculate();
+    }, [from, to, seats, petrolPrice]);
 
     // Convert "9:00 AM" or "14:30" to ISO 8601 datetime (today's date)
     const parseTimeToISO = (timeStr: string): string => {
@@ -57,7 +100,9 @@ export default function OfferRideScreen() {
 
     return (
         <SafeAreaView style={styles.container}>
-            <ScrollView contentContainerStyle={styles.scrollContent}>
+            <KeyboardAwareScrollView contentContainerStyle={styles.scrollContent}
+                keyboardShouldPersistTaps="handled"
+                nestedScrollEnabled={true}>
                 <View style={styles.header}>
                     <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
                         <Text style={styles.backText}>← Back</Text>
@@ -68,33 +113,52 @@ export default function OfferRideScreen() {
 
                 <View style={styles.form}>
                     <Text style={styles.label}>🟢 Starting Point</Text>
-                    <TextInput
-                        style={styles.input}
-                        placeholder="e.g. Wakad, Pune"
-                        placeholderTextColor="#999"
-                        value={from}
-                        onChangeText={setFrom}
-                    />
+                    <View style={{ zIndex: 20 }}>
+                        <LocationInput
+                            placeholder="e.g. Wakad, Pune"
+                            onLocationSelect={(address) => setFrom(address)}
+                        />
+                    </View>
 
                     <Text style={styles.label}>🔴 Destination</Text>
-                    <TextInput
-                        style={styles.input}
-                        placeholder="e.g. Hinjewadi Phase 1"
-                        placeholderTextColor="#999"
-                        value={to}
-                        onChangeText={setTo}
-                    />
+                    <View style={{ zIndex: 10 }}>
+                        <LocationInput
+                            placeholder="e.g. Hinjewadi Phase 1"
+                            onLocationSelect={(address) => setTo(address)}
+                        />
+                    </View>
 
                     <View style={styles.row}>
                         <View style={styles.halfWidth}>
                             <Text style={styles.label}>🕐 Departure Time</Text>
-                            <TextInput
+                            <TouchableOpacity
                                 style={styles.input}
-                                placeholder="e.g. 9:00 AM"
-                                placeholderTextColor="#999"
-                                value={time}
-                                onChangeText={setTime}
-                            />
+                                onPress={() => setShowTimePicker(true)}
+                            >
+                                <Text style={{ fontSize: 16, color: time ? '#333' : '#999' }}>
+                                    {time || 'Select departure time'}
+                                </Text>
+                            </TouchableOpacity>
+                            {showTimePicker && (
+                                <DateTimePicker
+                                    value={selectedTime}
+                                    mode="time"
+                                    is24Hour={false}
+                                    display="spinner"
+                                    onValueChange={(event, date) => {
+                                        setShowTimePicker(false);
+                                        if (date) {
+                                            setSelectedTime(date);
+                                            const hours = date.getHours();
+                                            const minutes = date.getMinutes();
+                                            const ampm = hours >= 12 ? 'PM' : 'AM';
+                                            const formattedHours = hours % 12 || 12;
+                                            const formattedMinutes = minutes < 10 ? `0${minutes}` : minutes;
+                                            setTime(`${formattedHours}:${formattedMinutes} ${ampm}`);
+                                        }
+                                    }}
+                                />
+                            )}
                         </View>
                         <View style={styles.halfWidth}>
                             <Text style={styles.label}>💺 Available Seats</Text>
@@ -111,14 +175,42 @@ export default function OfferRideScreen() {
                     </View>
 
                     <Text style={styles.label}>💰 Price per Seat (₹)</Text>
+                    {calculating && (
+                        <View style={styles.calculatingBox}>
+                            <ActivityIndicator size="small" color="#1a73e8" />
+                            <Text style={styles.calculatingText}>
+                                Calculating based on distance & petrol price...
+                            </Text>
+                        </View>
+                    )}
+
+                    {suggestedPrice && !calculating && (
+                        <View style={styles.suggestionBox}>
+                            <Text style={styles.suggestionText}>
+                                💡 Suggested: ₹{suggestedPrice} per seat
+                            </Text>
+                            <Text style={styles.suggestionSub}>
+                                Based on ₹{petrolPrice}/L petrol • 15km/L mileage
+                            </Text>
+                        </View>
+                    )}
+
                     <TextInput
                         style={styles.input}
-                        placeholder="e.g. 80"
+                        placeholder="Auto-calculated or enter manually"
                         placeholderTextColor="#999"
                         keyboardType="number-pad"
                         value={price}
                         onChangeText={setPrice}
                     />
+
+                    <View style={styles.earningBox}>
+                        <Text style={styles.earningLabel}>Potential Earning</Text>
+                        <Text style={styles.earningAmount}>
+                            ₹{price && seats ? parseInt(price) * parseInt(seats) : 0}
+                        </Text>
+                        <Text style={styles.earningNote}>if all seats filled</Text>
+                    </View>
 
                     <TouchableOpacity
                         style={[styles.publishButton, loading && styles.buttonDisabled]}
@@ -130,7 +222,7 @@ export default function OfferRideScreen() {
                         }
                     </TouchableOpacity>
                 </View>
-            </ScrollView>
+            </KeyboardAwareScrollView>
         </SafeAreaView>
     );
 }
@@ -150,5 +242,56 @@ const styles = StyleSheet.create({
     row: { flexDirection: 'row', justifyContent: 'space-between' },
     halfWidth: { width: '48%' },
     publishButton: { backgroundColor: '#1a73e8', borderRadius: 12, padding: 16, alignItems: 'center', marginTop: 16, shadowColor: '#1a73e8', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 6, elevation: 4 },
-    publishButtonText: { color: '#fff', fontSize: 18, fontWeight: 'bold' }
+    publishButtonText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
+    calculatingBox: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        padding: 12,
+        backgroundColor: '#f0f5ff',
+        borderRadius: 12,
+        marginBottom: 8
+    },
+    calculatingText: {
+        color: '#1a73e8',
+        fontSize: 13
+    },
+    suggestionBox: {
+        backgroundColor: '#e8f5e9',
+        borderRadius: 12,
+        padding: 12,
+        marginBottom: 8
+    },
+    suggestionText: {
+        color: '#2e7d32',
+        fontWeight: 'bold',
+        fontSize: 14
+    },
+    suggestionSub: {
+        color: '#66bb6a',
+        fontSize: 12,
+        marginTop: 4
+    },
+    earningBox: {
+        backgroundColor: '#e8f5e9',
+        borderRadius: 16,
+        padding: 20,
+        alignItems: 'center',
+        marginTop: 8,
+        marginBottom: 8
+    },
+    earningLabel: {
+        fontSize: 14,
+        color: '#2e7d32'
+    },
+    earningAmount: {
+        fontSize: 36,
+        fontWeight: 'bold',
+        color: '#2e7d32',
+        marginVertical: 4
+    },
+    earningNote: {
+        fontSize: 12,
+        color: '#66bb6a'
+    },
 });
