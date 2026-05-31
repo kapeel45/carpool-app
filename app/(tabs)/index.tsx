@@ -1,11 +1,33 @@
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getFuelPrices } from '../config/api';
+import { getSession } from '../config/session';
+import { useUserStats } from '@/hooks/use-user-stats';
 
 export default function HomeScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [fuelPrices, setFuelPrices] = useState<any[]>([]);
+  const [userPhone, setUserPhone] = useState('');
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const { stats, loading: statsLoading } = useUserStats();
+
+  useEffect(() => {
+    const checkSession = async () => {
+      const session = await getSession();
+      if (session?.loggedIn) {
+        setUserPhone(session.phone);
+        setIsLoggedIn(true);
+      }
+    };
+    checkSession();
+  }, []);
+
+  const handleFindRide = () => {
+    router.push(isLoggedIn ? '/search' : '/login');
+  };
 
   useEffect(() => {
     const loadFuelPrices = async () => {
@@ -20,14 +42,30 @@ export default function HomeScreen() {
   }, []);
 
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.greeting}>Good day! 👋</Text>
-        <Text style={styles.title}>Where are you going?</Text>
+    <View style={styles.container}>
+      <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
+        <View style={styles.headerRow}>
+          <View style={styles.headerText}>
+            <Text style={styles.greeting}>
+              {userPhone ? `Welcome back! 👋 ${userPhone}` : 'Good day! 👋'}
+            </Text>
+            <Text style={styles.title}>Where are you going?</Text>
+          </View>
+          <TouchableOpacity onPress={() => router.push('/profile')}>
+            <View style={styles.profileIcon}>
+              <Text style={styles.profileIconText}>👤</Text>
+            </View>
+          </TouchableOpacity>
+        </View>
       </View>
 
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
       <View style={styles.buttonContainer}>
-        <TouchableOpacity style={styles.findButton} onPress={() => router.push('/login')}>
+        <TouchableOpacity style={styles.findButton} onPress={handleFindRide}>
           <Text style={styles.buttonIcon}>🔍</Text>
           <Text style={styles.buttonTitle}>Find a Ride</Text>
           <Text style={styles.buttonSub}>Search available carpools</Text>
@@ -42,18 +80,24 @@ export default function HomeScreen() {
 
       <TouchableOpacity onPress={() => router.push('/myrides')}>
         <View style={styles.statsRow}>
-          <View style={styles.statBox}>
-            <Text style={styles.statNumber}>0</Text>
-            <Text style={styles.statLabel}>Rides Taken</Text>
-          </View>
-          <View style={styles.statBox}>
-            <Text style={styles.statNumber}>0</Text>
-            <Text style={styles.statLabel}>Rides Offered</Text>
-          </View>
-          <View style={styles.statBox}>
-            <Text style={styles.statNumber}>₹0</Text>
-            <Text style={styles.statLabel}>Saved</Text>
-          </View>
+          {statsLoading ? (
+            <ActivityIndicator size="small" color="#1a73e8" style={styles.statsLoader} />
+          ) : (
+            <>
+              <View style={styles.statBox}>
+                <Text style={styles.statNumber}>{stats.ridesTaken}</Text>
+                <Text style={styles.statLabel}>Rides Taken</Text>
+              </View>
+              <View style={styles.statBox}>
+                <Text style={styles.statNumber}>{stats.ridesOffered}</Text>
+                <Text style={styles.statLabel}>Rides Offered</Text>
+              </View>
+              <View style={styles.statBox}>
+                <Text style={styles.statNumber}>₹{stats.saved}</Text>
+                <Text style={styles.statLabel}>Saved</Text>
+              </View>
+            </>
+          )}
         </View>
         <View style={styles.fuelContainer}>
           <Text style={styles.fuelTitle}>⛽ Pune Fuel Prices</Text>
@@ -79,7 +123,8 @@ export default function HomeScreen() {
           </View>
         </View>
       </TouchableOpacity>
-    </SafeAreaView>
+      </ScrollView>
+    </View>
   );
 }
 
@@ -96,10 +141,22 @@ const styles = StyleSheet.create({
   fuelPrice: { fontSize: 18, fontWeight: 'bold', color: '#1a73e8', marginTop: 4 },
   fuelUpdated: { fontSize: 10, color: '#999', marginTop: 4 },
   container: { flex: 1, backgroundColor: '#f5f5f5' },
-  header: { padding: 24, backgroundColor: '#1a73e8', paddingTop: 48 },
+  scroll: { flex: 1 },
+  scrollContent: { paddingBottom: 24 },
+  header: {
+    backgroundColor: '#1a73e8',
+    paddingHorizontal: 24,
+    paddingBottom: 24,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  headerText: { flex: 1, paddingRight: 12 },
   greeting: { color: '#fff', fontSize: 16, opacity: 0.9 },
   title: { color: '#fff', fontSize: 26, fontWeight: 'bold', marginTop: 4 },
-  buttonContainer: { padding: 20, gap: 16, marginTop: 8 },
+  buttonContainer: { padding: 20, gap: 16 },
   findButton: { backgroundColor: '#fff', borderRadius: 16, padding: 24, elevation: 3, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 8 },
   offerButton: { backgroundColor: '#1a73e8', borderRadius: 16, padding: 24, elevation: 3 },
   buttonIcon: { fontSize: 32, marginBottom: 8 },
@@ -108,7 +165,10 @@ const styles = StyleSheet.create({
   offerButtonTitle: { fontSize: 20, fontWeight: 'bold', color: '#fff' },
   offerButtonSub: { fontSize: 14, color: '#fff', opacity: 0.85, marginTop: 4 },
   statsRow: { flexDirection: 'row', margin: 20, backgroundColor: '#fff', borderRadius: 16, padding: 20, justifyContent: 'space-around', elevation: 2 },
-  statBox: { alignItems: 'center' },
+  statBox: { alignItems: 'center', flex: 1 },
+  statsLoader: { flex: 1, paddingVertical: 8 },
   statNumber: { fontSize: 24, fontWeight: 'bold', color: '#1a73e8' },
   statLabel: { fontSize: 12, color: '#666', marginTop: 4 },
+  profileIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center' },
+  profileIconText: { fontSize: 22 },
 });

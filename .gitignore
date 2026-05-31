@@ -31,7 +31,11 @@ yarn-error.*
 *.pem
 
 # local env files
+.env
 .env*.local
+
+# Cursor MCP (copy .cursor/mcp.json.example → .cursor/mcp.json locally)
+.cursor/mcp.json
 
 # typescript
 *.tsbuildinfo

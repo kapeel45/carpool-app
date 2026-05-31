@@ -1,5 +1,5 @@
-import React from 'react';
-import { StyleSheet, View } from 'react-native';
+import React, { useRef } from 'react';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { GooglePlacesAutocomplete } from 'react-native-google-places-autocomplete';
 
 const GOOGLE_MAPS_API_KEY = 'AIzaSyBhjfn1ZfqiR4zSGT8clhe2Yc-X8FYifF8';
@@ -7,12 +7,21 @@ const GOOGLE_MAPS_API_KEY = 'AIzaSyBhjfn1ZfqiR4zSGT8clhe2Yc-X8FYifF8';
 interface LocationInputProps {
     placeholder: string;
     onLocationSelect: (address: string) => void;
+    variant?: 'pickup' | 'dropoff';
 }
 
-export default function LocationInput({ placeholder, onLocationSelect }: LocationInputProps) {
+export default function LocationInput({ placeholder, onLocationSelect, variant }: LocationInputProps) {
+    const ref = useRef<any>(null);
+
+    const handleClear = () => {
+        ref.current?.clear();
+        onLocationSelect('');
+    };
+
     return (
-        <View style={styles.container}>
+        <View style={styles.wrapper}>
             <GooglePlacesAutocomplete
+                ref={ref}
                 placeholder={placeholder}
                 onPress={(data) => {
                     onLocationSelect(data.description);
@@ -25,19 +34,34 @@ export default function LocationInput({ placeholder, onLocationSelect }: Locatio
                     radius: 50000,
                 }}
                 styles={{
-                    textInputContainer: {
-                        backgroundColor: 'transparent',
+                    container: {
+                        width: '100%',
+                        flex: 0,
                     },
-                    textInput: {
+                    textInputContainer: {
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        width: '100%',
                         backgroundColor: '#fff',
                         borderWidth: 1,
                         borderColor: '#ddd',
                         borderRadius: 12,
-                        paddingHorizontal: 14,
-                        paddingVertical: 12,
+                        height: 48,
+                        paddingRight: 8,
+                        overflow: 'hidden',
+                    },
+                    textInput: {
+                        flex: 1,
+                        minWidth: 0,
+                        backgroundColor: 'transparent',
+                        borderWidth: 0,
+                        borderRadius: 0,
+                        paddingHorizontal: 8,
+                        paddingVertical: 0,
                         fontSize: 15,
                         color: '#333',
                         height: 48,
+                        margin: 0,
                     },
                     listView: {
                         backgroundColor: '#fff',
@@ -63,26 +87,76 @@ export default function LocationInput({ placeholder, onLocationSelect }: Locatio
                         fontSize: 14,
                         color: '#333',
                     },
-                    separator: {
-                        height: 1,
-                        backgroundColor: '#f0f0f0',
-                    },
                 }}
+                renderLeftButton={() =>
+                    variant ? (
+                        <View style={styles.indicatorWrap}>
+                            <View
+                                style={[
+                                    styles.indicator,
+                                    variant === 'pickup' ? styles.pickup : styles.dropoff,
+                                ]}
+                            />
+                        </View>
+                    ) : null
+                }
+                renderRightButton={() => (
+                    <TouchableOpacity style={styles.clearButton} onPress={handleClear}>
+                        <Text style={styles.clearText}>✕</Text>
+                    </TouchableOpacity>
+                )}
                 fetchDetails={false}
                 enablePoweredByContainer={false}
                 debounce={300}
                 minLength={2}
                 keepResultsAfterBlur={true}
                 keyboardShouldPersistTaps="handled"
-                listViewDisplayed={true}
+                listViewDisplayed="auto"
+                flatListProps={{
+                    nestedScrollEnabled: true,
+                    keyboardShouldPersistTaps: 'handled',
+                }}
             />
         </View>
     );
 }
 
 const styles = StyleSheet.create({
-    container: {
-        flex: 1,
+    wrapper: {
+        width: '100%',
         zIndex: 9999,
+    },
+    indicatorWrap: {
+        width: 34,
+        height: 48,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    indicator: {
+        width: 10,
+        height: 10,
+        borderRadius: 5,
+    },
+    pickup: {
+        backgroundColor: '#34a853',
+    },
+    dropoff: {
+        backgroundColor: '#ea4335',
+    },
+    clearButton: {
+        width: 24,
+        height: 24,
+        borderRadius: 12,
+        backgroundColor: '#e0e0e0',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginLeft: 4,
+        flexShrink: 0,
+    },
+    clearText: {
+        fontSize: 11,
+        color: '#666',
+        fontWeight: 'bold',
+        lineHeight: 12,
     },
 });

@@ -1,16 +1,18 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, SafeAreaView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LocationInput from './components/LocationInput';
 import { calculateSuggestedPrice, createRide, getFuelPrices } from './config/api';
+import { getSession } from './config/session';
 
 export default function OfferRideScreen() {
 
     const [loading, setLoading] = useState(false);
 
     const router = useRouter();
+    const insets = useSafeAreaInsets();
     const [from, setFrom] = useState('');
     const [to, setTo] = useState('');
     const [time, setTime] = useState('');
@@ -21,6 +23,42 @@ export default function OfferRideScreen() {
     const [suggestedPrice, setSuggestedPrice] = useState<number | null>(null);
     const [calculating, setCalculating] = useState(false);
     const [petrolPrice, setPetrolPrice] = useState(104.89);
+    const [driverPhone, setDriverPhone] = useState('');
+
+    useEffect(() => {
+        const loadUser = async () => {
+            const session = await getSession();
+            if (session) {
+                setDriverPhone(session.phone);
+            }
+        };
+        loadUser();
+    }, []);
+
+    useEffect(() => {
+        const checkVerification = async () => {
+            const session = await getSession();
+            if (!session?.emailVerified) {
+                Alert.alert(
+                    'Verification Required',
+                    'Only verified users can offer rides. Please complete your profile with official email and car details.',
+                    [
+                        { text: 'Go to Profile', onPress: () => router.replace('/profile') },
+                        { text: 'Cancel', onPress: () => router.back() }
+                    ]
+                );
+            }
+        };
+        checkVerification();
+    }, []);
+
+    useEffect(() => {
+        const loadUser = async () => {
+            const session = await getSession();
+            if (session) setDriverPhone(session.phone);
+        };
+        loadUser();
+    }, []);
 
     useEffect(() => {
         const loadPetrolPrice = async () => {
@@ -37,12 +75,10 @@ export default function OfferRideScreen() {
 
     useEffect(() => {
         const autoCalculate = async () => {
-            if (from && to && seats) {
+            if (from && to) {
                 setCalculating(true);
                 try {
-                    const suggested = await calculateSuggestedPrice(
-                        from, to, petrolPrice
-                    );
+                    const suggested = await calculateSuggestedPrice(from, to, petrolPrice);
                     if (suggested > 0) {
                         setSuggestedPrice(suggested);
                         setPrice(suggested.toString());
@@ -55,7 +91,41 @@ export default function OfferRideScreen() {
             }
         };
         autoCalculate();
-    }, [from, to, seats, petrolPrice]);
+    }, [from, to, petrolPrice]);
+
+    const formatTime = (date: Date) => {
+        const hours = date.getHours();
+        const minutes = date.getMinutes();
+        const ampm = hours >= 12 ? 'PM' : 'AM';
+        const formattedHours = hours % 12 || 12;
+        const formattedMinutes = minutes < 10 ? `0${minutes}` : minutes;
+        return `${formattedHours}:${formattedMinutes} ${ampm}`;
+    };
+
+    const applySelectedTime = (date: Date) => {
+        const now = new Date();
+        const picked = new Date(date);
+        picked.setFullYear(now.getFullYear(), now.getMonth(), now.getDate());
+        if (picked < now) {
+            Alert.alert('Invalid Time', 'Please select a future time.');
+            return;
+        }
+        setSelectedTime(picked);
+        setTime(formatTime(picked));
+    };
+
+    const handleTimeChange = (event: any, date?: Date) => {
+        if (Platform.OS === 'android') {
+            setShowTimePicker(false);
+        }
+        if (event.type === 'dismissed' || !date) return;
+        applySelectedTime(date);
+    };
+
+    const confirmIosTime = () => {
+        applySelectedTime(selectedTime);
+        setShowTimePicker(false);
+    };
 
     // Convert "9:00 AM" or "14:30" to ISO 8601 datetime (today's date)
     const parseTimeToISO = (timeStr: string): string => {
@@ -83,7 +153,7 @@ export default function OfferRideScreen() {
                 departure_time: parseTimeToISO(time),
                 available_seats: parseInt(seats),
                 price_per_seat: parseInt(price),
-                driver_name: 'Test Driver',
+                driver_name: driverPhone,
                 status: 'active'
             });
             Alert.alert('Success 🎉', 'Your ride has been published!', [
@@ -99,69 +169,63 @@ export default function OfferRideScreen() {
     };
 
     return (
-        <SafeAreaView style={styles.container}>
-            <KeyboardAwareScrollView contentContainerStyle={styles.scrollContent}
-                keyboardShouldPersistTaps="handled"
-                nestedScrollEnabled={true}>
-                <View style={styles.header}>
-                    <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-                        <Text style={styles.backText}>← Back</Text>
-                    </TouchableOpacity>
+        <View style={styles.container}>
+            <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
+                <TouchableOpacity onPress={() => router.back()} style={styles.backButton} hitSlop={12}>
+                    <Text style={styles.backText}>← Back</Text>
+                </TouchableOpacity>
+                <View style={styles.headerText}>
                     <Text style={styles.title}>Offer a Ride</Text>
                     <Text style={styles.sub}>Share your commute, earn money</Text>
                 </View>
+            </View>
 
+            <KeyboardAvoidingView
+                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+                style={styles.flex}
+            >
+                <ScrollView
+                    style={styles.scroll}
+                    contentContainerStyle={styles.scrollContent}
+                    keyboardShouldPersistTaps="handled"
+                    nestedScrollEnabled
+                    showsVerticalScrollIndicator={false}
+                >
                 <View style={styles.form}>
-                    <Text style={styles.label}>🟢 Starting Point</Text>
-                    <View style={{ zIndex: 20 }}>
-                        <LocationInput
-                            placeholder="e.g. Wakad, Pune"
-                            onLocationSelect={(address) => setFrom(address)}
-                        />
-                    </View>
-
-                    <Text style={styles.label}>🔴 Destination</Text>
-                    <View style={{ zIndex: 10 }}>
-                        <LocationInput
-                            placeholder="e.g. Hinjewadi Phase 1"
-                            onLocationSelect={(address) => setTo(address)}
-                        />
+                    <View style={styles.routeCard}>
+                        <View style={styles.routeLine} pointerEvents="none" />
+                        <View style={[styles.fieldWrap, styles.fieldWrapTop]}>
+                            <LocationInput
+                                variant="pickup"
+                                placeholder="e.g. Wakad, Pune"
+                                onLocationSelect={(address) => setFrom(address)}
+                            />
+                        </View>
+                        <View style={styles.fieldWrap}>
+                            <LocationInput
+                                variant="dropoff"
+                                placeholder="e.g. Hinjewadi Phase 1"
+                                onLocationSelect={(address) => setTo(address)}
+                            />
+                        </View>
                     </View>
 
                     <View style={styles.row}>
                         <View style={styles.halfWidth}>
-                            <Text style={styles.label}>🕐 Departure Time</Text>
+                            <Text style={styles.label}>Departure Time</Text>
                             <TouchableOpacity
-                                style={styles.input}
+                                style={styles.timeInput}
                                 onPress={() => setShowTimePicker(true)}
+                                activeOpacity={0.7}
                             >
-                                <Text style={{ fontSize: 16, color: time ? '#333' : '#999' }}>
-                                    {time || 'Select departure time'}
+                                <Text style={styles.timeIcon}>🕐</Text>
+                                <Text style={[styles.timeText, !time && styles.timePlaceholder]}>
+                                    {time || 'Select time'}
                                 </Text>
                             </TouchableOpacity>
-                            {showTimePicker && (
-                                <DateTimePicker
-                                    value={selectedTime}
-                                    mode="time"
-                                    is24Hour={false}
-                                    display="spinner"
-                                    onValueChange={(event, date) => {
-                                        setShowTimePicker(false);
-                                        if (date) {
-                                            setSelectedTime(date);
-                                            const hours = date.getHours();
-                                            const minutes = date.getMinutes();
-                                            const ampm = hours >= 12 ? 'PM' : 'AM';
-                                            const formattedHours = hours % 12 || 12;
-                                            const formattedMinutes = minutes < 10 ? `0${minutes}` : minutes;
-                                            setTime(`${formattedHours}:${formattedMinutes} ${ampm}`);
-                                        }
-                                    }}
-                                />
-                            )}
                         </View>
                         <View style={styles.halfWidth}>
-                            <Text style={styles.label}>💺 Available Seats</Text>
+                            <Text style={styles.label}>Available Seats</Text>
                             <TextInput
                                 style={styles.input}
                                 placeholder="e.g. 2"
@@ -190,7 +254,7 @@ export default function OfferRideScreen() {
                                 💡 Suggested: ₹{suggestedPrice} per seat
                             </Text>
                             <Text style={styles.suggestionSub}>
-                                Based on ₹{petrolPrice}/L petrol • 15km/L mileage • flat per seat
+                                Based on ₹{petrolPrice}/L petrol • 15km/L mileage • route distance
                             </Text>
                         </View>
                     )}
@@ -222,25 +286,137 @@ export default function OfferRideScreen() {
                         }
                     </TouchableOpacity>
                 </View>
-            </KeyboardAwareScrollView>
-        </SafeAreaView>
+                </ScrollView>
+            </KeyboardAvoidingView>
+
+            {showTimePicker && Platform.OS === 'android' && (
+                <DateTimePicker
+                    value={selectedTime}
+                    mode="time"
+                    is24Hour={false}
+                    display="default"
+                    onChange={handleTimeChange}
+                />
+            )}
+
+            {Platform.OS === 'ios' && (
+                <Modal visible={showTimePicker} transparent animationType="slide">
+                    <View style={styles.pickerOverlay}>
+                        <View style={styles.pickerSheet}>
+                            <View style={styles.pickerHeader}>
+                                <TouchableOpacity onPress={() => setShowTimePicker(false)}>
+                                    <Text style={styles.pickerAction}>Cancel</Text>
+                                </TouchableOpacity>
+                                <Text style={styles.pickerTitle}>Departure Time</Text>
+                                <TouchableOpacity onPress={confirmIosTime}>
+                                    <Text style={[styles.pickerAction, styles.pickerDone]}>Done</Text>
+                                </TouchableOpacity>
+                            </View>
+                            <DateTimePicker
+                                value={selectedTime}
+                                mode="time"
+                                is24Hour={false}
+                                display="spinner"
+                                style={styles.iosPicker}
+                                onChange={(_, date) => date && setSelectedTime(date)}
+                            />
+                        </View>
+                    </View>
+                </Modal>
+            )}
+        </View>
     );
 }
 
 const styles = StyleSheet.create({
     buttonDisabled: { backgroundColor: '#93b8f5' },
     container: { flex: 1, backgroundColor: '#f5f5f5' },
+    flex: { flex: 1 },
+    scroll: { flex: 1 },
     scrollContent: { paddingBottom: 40 },
-    header: { backgroundColor: '#1a73e8', padding: 24, paddingTop: 48 },
-    backButton: { marginBottom: 16 },
-    backText: { color: '#fff', fontSize: 16, fontWeight: 'bold', opacity: 0.9 },
+    header: {
+        backgroundColor: '#1a73e8',
+        paddingHorizontal: 24,
+        paddingBottom: 24,
+    },
+    backButton: { marginBottom: 12 },
+    backText: { color: '#fff', fontSize: 16, fontWeight: '600', opacity: 0.95 },
+    headerText: { flex: 1 },
     title: { color: '#fff', fontSize: 26, fontWeight: 'bold' },
-    sub: { color: '#fff', fontSize: 14, opacity: 0.85, marginTop: 4 },
+    sub: { color: '#fff', fontSize: 16, opacity: 0.9, marginTop: 4 },
     form: { padding: 20, gap: 16 },
-    label: { fontSize: 15, fontWeight: '600', color: '#333', marginBottom: 4 },
-    input: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#ddd', borderRadius: 12, padding: 14, fontSize: 16, color: '#333' },
-    row: { flexDirection: 'row', justifyContent: 'space-between' },
-    halfWidth: { width: '48%' },
+    routeCard: {
+        width: '100%',
+        position: 'relative',
+    },
+    routeLine: {
+        position: 'absolute',
+        left: 16,
+        top: 34,
+        width: 2,
+        height: 44,
+        backgroundColor: '#dadce0',
+        zIndex: 1,
+    },
+    fieldWrap: {
+        width: '100%',
+        zIndex: 10,
+    },
+    fieldWrapTop: {
+        marginBottom: 12,
+        zIndex: 20,
+    },
+    label: { fontSize: 15, fontWeight: '600', color: '#333', marginBottom: 6 },
+    input: {
+        backgroundColor: '#fff',
+        borderWidth: 1,
+        borderColor: '#ddd',
+        borderRadius: 12,
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+        fontSize: 15,
+        color: '#333',
+        height: 48,
+    },
+    timeInput: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#fff',
+        borderWidth: 1,
+        borderColor: '#ddd',
+        borderRadius: 12,
+        paddingHorizontal: 14,
+        height: 48,
+    },
+    timeIcon: { fontSize: 15, marginRight: 8 },
+    timeText: { fontSize: 15, color: '#333', flex: 1 },
+    timePlaceholder: { color: '#999' },
+    pickerOverlay: {
+        flex: 1,
+        justifyContent: 'flex-end',
+        backgroundColor: 'rgba(0,0,0,0.4)',
+    },
+    pickerSheet: {
+        backgroundColor: '#fff',
+        borderTopLeftRadius: 16,
+        borderTopRightRadius: 16,
+        paddingBottom: 24,
+    },
+    pickerHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingHorizontal: 16,
+        paddingVertical: 14,
+        borderBottomWidth: 1,
+        borderBottomColor: '#eee',
+    },
+    pickerTitle: { fontSize: 16, fontWeight: '600', color: '#333' },
+    pickerAction: { fontSize: 16, color: '#666' },
+    pickerDone: { color: '#1a73e8', fontWeight: '600' },
+    iosPicker: { height: 180 },
+    row: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
+    halfWidth: { flex: 1 },
     publishButton: { backgroundColor: '#1a73e8', borderRadius: 12, padding: 16, alignItems: 'center', marginTop: 16, shadowColor: '#1a73e8', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 6, elevation: 4 },
     publishButtonText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
     calculatingBox: {
