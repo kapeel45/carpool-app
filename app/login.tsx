@@ -1,7 +1,22 @@
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, SafeAreaView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { createUser, findUserByPhone, updateUserProfile } from './config/api';
+import {
+    ActivityIndicator,
+    Alert,
+    SafeAreaView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
+} from 'react-native';
+import {
+    buildSessionFromUser,
+    createUser,
+    findUserByPhone,
+    getUserById,
+    updateUserProfile,
+} from './config/api';
 import { getSession, saveSession } from './config/session';
 
 type LoginStep = 'phone' | 'set_mpin' | 'enter_mpin';
@@ -9,11 +24,15 @@ type LoginStep = 'phone' | 'set_mpin' | 'enter_mpin';
 export default function LoginScreen() {
     const router = useRouter();
     const [phone, setPhone] = useState('');
+    const [name, setName] = useState('');
     const [mpin, setMpin] = useState('');
     const [confirmMpin, setConfirmMpin] = useState('');
     const [step, setStep] = useState<LoginStep>('phone');
     const [loading, setLoading] = useState(false);
     const [existingUser, setExistingUser] = useState<any>(null);
+    const [isNewUser, setIsNewUser] = useState(false);
+
+    const needsName = isNewUser || !existingUser?.name?.trim();
 
     useEffect(() => {
         const checkExistingSession = async () => {
@@ -25,20 +44,31 @@ export default function LoginScreen() {
         checkExistingSession();
     }, []);
 
+    const finishLogin = async (userId: string | number) => {
+        const user = await getUserById(userId);
+        if (!user) {
+            throw new Error(
+                'Account was created but could not be loaded. Log out, restart the app, and try again.'
+            );
+        }
+        await saveSession(buildSessionFromUser(user));
+        router.replace('/search');
+    };
+
     const handlePhoneSubmit = async () => {
         if (phone.length !== 10) return;
         setLoading(true);
         try {
             const user = await findUserByPhone(phone);
-            if (user) {
-                setExistingUser(user);
-                setStep(user.mpin ? 'enter_mpin' : 'set_mpin');
-                return;
-            }
+            setExistingUser(user);
+            setIsNewUser(!user);
+            setName(user?.name?.trim() || '');
 
-            const newUser = await createUser(phone);
-            setExistingUser(newUser);
-            setStep('set_mpin');
+            if (user?.mpin) {
+                setStep('enter_mpin');
+            } else {
+                setStep('set_mpin');
+            }
         } catch (error) {
             console.error('Login error:', error);
             Alert.alert('Error', 'Could not connect. Check your internet and try again.');
@@ -48,6 +78,10 @@ export default function LoginScreen() {
     };
 
     const handleSetMpin = async () => {
+        if (needsName && !name.trim()) {
+            Alert.alert('Name required', 'Please enter your full name.');
+            return;
+        }
         if (mpin.length !== 4) {
             Alert.alert('Invalid MPIN', 'MPIN must be 4 digits.');
             return;
@@ -58,21 +92,29 @@ export default function LoginScreen() {
             setConfirmMpin('');
             return;
         }
+
         setLoading(true);
         try {
-            await updateUserProfile(existingUser.id, { mpin });
-            await saveSession({
-                loggedIn: true,
-                userId: existingUser.id,
-                phone: existingUser.phone,
-                name: existingUser.name,
-                gender: existingUser.gender,
-                email: existingUser.email,
-                emailVerified: existingUser.email_verified,
-            });
-            router.replace('/search');
-        } catch (error) {
-            Alert.alert('Error', 'Could not set MPIN. Try again.');
+            let userId: string | number;
+
+            if (isNewUser) {
+                const created = await createUser(phone, name.trim());
+                userId = created.id;
+            } else {
+                userId = existingUser.id;
+                if (name.trim() && name.trim() !== existingUser?.name?.trim()) {
+                    await updateUserProfile(userId, { name: name.trim() });
+                }
+            }
+
+            await updateUserProfile(userId, { mpin });
+            await finishLogin(userId);
+        } catch (error: any) {
+            const msg =
+                error?.response?.data?.errors?.[0]?.message ||
+                error?.message ||
+                'Could not complete sign up. Try again.';
+            Alert.alert('Error', msg);
         } finally {
             setLoading(false);
         }
@@ -80,29 +122,44 @@ export default function LoginScreen() {
 
     const handleVerifyMpin = async () => {
         if (mpin.length !== 4) return;
+        if (!existingUser?.name?.trim() && !name.trim()) {
+            Alert.alert('Name required', 'Please enter your name to continue.');
+            return;
+        }
+
         setLoading(true);
         try {
-            if (mpin === existingUser.mpin) {
-                await saveSession({
-                    loggedIn: true,
-                    userId: existingUser.id,
-                    phone: existingUser.phone,
-                    name: existingUser.name,
-                    gender: existingUser.gender,
-                    email: existingUser.email,
-                    emailVerified: existingUser.email_verified,
-                });
-                router.replace('/search');
-            } else {
+            if (mpin !== existingUser.mpin) {
                 Alert.alert('Wrong MPIN', 'Incorrect MPIN. Please try again.');
                 setMpin('');
+                return;
             }
-        } catch (error) {
-            Alert.alert('Error', 'Login failed. Try again.');
+
+            if (!existingUser.name?.trim() && name.trim()) {
+                await updateUserProfile(existingUser.id, { name: name.trim() });
+            }
+
+            await finishLogin(existingUser.id);
+        } catch (error: any) {
+            Alert.alert('Error', error?.message || 'Login failed. Try again.');
         } finally {
             setLoading(false);
         }
     };
+
+    const resetToPhone = () => {
+        setStep('phone');
+        setMpin('');
+        setConfirmMpin('');
+        setName('');
+        setExistingUser(null);
+        setIsNewUser(false);
+    };
+
+    const welcomeName =
+        existingUser?.name?.trim() ||
+        name.trim() ||
+        'there';
 
     return (
         <SafeAreaView style={styles.container}>
@@ -113,12 +170,12 @@ export default function LoginScreen() {
             </View>
 
             <View style={styles.form}>
-
-                {/* STEP 1 - Phone */}
                 {step === 'phone' && (
                     <>
-                        <Text style={styles.stepTitle}>Enter your mobile number</Text>
-                        <Text style={styles.stepSub}>We'll check if you have an account</Text>
+                        <Text style={styles.stepTitle}>Sign in or sign up</Text>
+                        <Text style={styles.stepSub}>
+                            Your mobile number is your unique account ID
+                        </Text>
                         <View style={styles.phoneRow}>
                             <Text style={styles.code}>+91</Text>
                             <TextInput
@@ -135,19 +192,39 @@ export default function LoginScreen() {
                             onPress={handlePhoneSubmit}
                             disabled={loading}
                         >
-                            {loading
-                                ? <ActivityIndicator color="#fff" />
-                                : <Text style={styles.buttonText}>Continue →</Text>
-                            }
+                            {loading ? (
+                                <ActivityIndicator color="#fff" />
+                            ) : (
+                                <Text style={styles.buttonText}>Continue →</Text>
+                            )}
                         </TouchableOpacity>
                     </>
                 )}
 
-                {/* STEP 2 - Set MPIN (new user) */}
                 {step === 'set_mpin' && (
                     <>
-                        <Text style={styles.stepTitle}>Set your 4-digit MPIN</Text>
-                        <Text style={styles.stepSub}>New number — create an MPIN to continue</Text>
+                        <Text style={styles.stepTitle}>
+                            {isNewUser ? 'Create your account' : 'Complete your profile'}
+                        </Text>
+                        <Text style={styles.stepSub}>
+                            {isNewUser
+                                ? `+91 ${phone} • one account per mobile number`
+                                : `+91 ${phone}`}
+                        </Text>
+
+                        {needsName && (
+                            <>
+                                <Text style={styles.label}>Full name</Text>
+                                <TextInput
+                                    style={styles.nameInput}
+                                    placeholder="Your name"
+                                    placeholderTextColor="#999"
+                                    value={name}
+                                    onChangeText={setName}
+                                    autoCapitalize="words"
+                                />
+                            </>
+                        )}
 
                         <Text style={styles.label}>Create MPIN</Text>
                         <TextInput
@@ -174,27 +251,50 @@ export default function LoginScreen() {
                         />
 
                         <TouchableOpacity
-                            style={[styles.button, (mpin.length !== 4 || confirmMpin.length !== 4 || loading) && styles.buttonDisabled]}
+                            style={[
+                                styles.button,
+                                ((needsName && !name.trim()) ||
+                                    mpin.length !== 4 ||
+                                    confirmMpin.length !== 4 ||
+                                    loading) &&
+                                    styles.buttonDisabled,
+                            ]}
                             onPress={handleSetMpin}
                             disabled={loading}
                         >
-                            {loading
-                                ? <ActivityIndicator color="#fff" />
-                                : <Text style={styles.buttonText}>Set MPIN & Login</Text>
-                            }
+                            {loading ? (
+                                <ActivityIndicator color="#fff" />
+                            ) : (
+                                <Text style={styles.buttonText}>
+                                    {isNewUser ? 'Sign up & continue' : 'Save & continue'}
+                                </Text>
+                            )}
                         </TouchableOpacity>
 
-                        <TouchableOpacity onPress={() => { setStep('phone'); setMpin(''); setConfirmMpin(''); }}>
+                        <TouchableOpacity onPress={resetToPhone}>
                             <Text style={styles.back}>← Change number</Text>
                         </TouchableOpacity>
                     </>
                 )}
 
-                {/* STEP 3 - Enter MPIN (existing user) */}
                 {step === 'enter_mpin' && (
                     <>
-                        <Text style={styles.stepTitle}>Welcome back! 👋</Text>
+                        <Text style={styles.stepTitle}>Welcome back, {welcomeName}! 👋</Text>
                         <Text style={styles.stepSub}>+91 {phone}</Text>
+
+                        {!existingUser?.name?.trim() && (
+                            <>
+                                <Text style={styles.label}>Full name</Text>
+                                <TextInput
+                                    style={styles.nameInput}
+                                    placeholder="Your name"
+                                    placeholderTextColor="#999"
+                                    value={name}
+                                    onChangeText={setName}
+                                    autoCapitalize="words"
+                                />
+                            </>
+                        )}
 
                         <Text style={styles.label}>Enter your MPIN</Text>
                         <TextInput
@@ -209,17 +309,24 @@ export default function LoginScreen() {
                         />
 
                         <TouchableOpacity
-                            style={[styles.button, (mpin.length !== 4 || loading) && styles.buttonDisabled]}
+                            style={[
+                                styles.button,
+                                (mpin.length !== 4 ||
+                                    loading ||
+                                    (!existingUser?.name?.trim() && !name.trim())) &&
+                                    styles.buttonDisabled,
+                            ]}
                             onPress={handleVerifyMpin}
                             disabled={loading}
                         >
-                            {loading
-                                ? <ActivityIndicator color="#fff" />
-                                : <Text style={styles.buttonText}>Login →</Text>
-                            }
+                            {loading ? (
+                                <ActivityIndicator color="#fff" />
+                            ) : (
+                                <Text style={styles.buttonText}>Login →</Text>
+                            )}
                         </TouchableOpacity>
 
-                        <TouchableOpacity onPress={() => { setStep('phone'); setMpin(''); }}>
+                        <TouchableOpacity onPress={resetToPhone}>
                             <Text style={styles.back}>← Change number</Text>
                         </TouchableOpacity>
                     </>
@@ -239,11 +346,43 @@ const styles = StyleSheet.create({
     stepTitle: { fontSize: 20, fontWeight: 'bold', color: '#333', marginBottom: 6 },
     stepSub: { fontSize: 14, color: '#666', marginBottom: 24 },
     label: { fontSize: 15, fontWeight: '600', color: '#444', marginBottom: 8 },
-    phoneRow: { flexDirection: 'row', alignItems: 'center', borderWidth: 1.5, borderColor: '#1a73e8', borderRadius: 12, marginBottom: 24, overflow: 'hidden' },
+    phoneRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        borderWidth: 1.5,
+        borderColor: '#1a73e8',
+        borderRadius: 12,
+        marginBottom: 24,
+        overflow: 'hidden',
+    },
     code: { backgroundColor: '#f0f5ff', padding: 16, fontSize: 16, fontWeight: 'bold', color: '#1a73e8' },
     input: { flex: 1, padding: 16, fontSize: 16 },
-    mpinInput: { borderWidth: 1.5, borderColor: '#1a73e8', borderRadius: 12, padding: 16, fontSize: 32, letterSpacing: 16, marginBottom: 20, color: '#333' },
-    button: { backgroundColor: '#1a73e8', borderRadius: 12, padding: 16, alignItems: 'center', marginTop: 8 },
+    nameInput: {
+        borderWidth: 1.5,
+        borderColor: '#1a73e8',
+        borderRadius: 12,
+        padding: 16,
+        fontSize: 16,
+        marginBottom: 20,
+        color: '#333',
+    },
+    mpinInput: {
+        borderWidth: 1.5,
+        borderColor: '#1a73e8',
+        borderRadius: 12,
+        padding: 16,
+        fontSize: 32,
+        letterSpacing: 16,
+        marginBottom: 20,
+        color: '#333',
+    },
+    button: {
+        backgroundColor: '#1a73e8',
+        borderRadius: 12,
+        padding: 16,
+        alignItems: 'center',
+        marginTop: 8,
+    },
     buttonDisabled: { backgroundColor: '#93b8f5' },
     buttonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
     back: { textAlign: 'center', marginTop: 16, color: '#1a73e8', fontSize: 14 },

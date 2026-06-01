@@ -3,7 +3,17 @@ import { useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { getRides, getUserBookings, getUserOfferedRides, normalizePhone, resolveDisplayName, resolveRelationId } from './config/api';
+import {
+    getDisplayName,
+    getRideIdsWithActiveBookings,
+    getRides,
+    getUserBookings,
+    getUserOfferedRides,
+    isCancelledBooking,
+    normalizePhone,
+    resolveDisplayName,
+    resolveRelationId,
+} from './config/api';
 import { getSession } from './config/session';
 import { useUserStats } from '@/hooks/use-user-stats';
 
@@ -22,6 +32,7 @@ type RideItem = {
     status: 'confirmed' | 'completed';
     rideId?: string;
     bookingId?: string;
+    canEdit?: boolean;
 };
 
 const formatRideTime = (value?: string) => {
@@ -58,12 +69,13 @@ export default function MyRidesScreen() {
                         return;
                     }
 
-                    setUserName(session.name || session.phone);
+                    setUserName(getDisplayName(session.name));
 
-                    const [bookings, offeredRides, allRides] = await Promise.all([
+                    const [bookings, offeredRides, allRides, ridesWithBookings] = await Promise.all([
                         getUserBookings(session.phone),
                         getUserOfferedRides(session.phone),
                         getRides(),
+                        getRideIdsWithActiveBookings(),
                     ]);
 
                     const nameCache = new Map<string, string>();
@@ -79,6 +91,8 @@ export default function MyRidesScreen() {
                     const items: RideItem[] = [];
 
                     for (const booking of bookings) {
+                        if (isCancelledBooking(booking)) continue;
+
                         const rideRef = booking.ride_id;
                         const rideFromRelation =
                             typeof rideRef === 'object' && rideRef !== null ? rideRef : null;
@@ -112,6 +126,7 @@ export default function MyRidesScreen() {
                         const isUpcoming = departure ? new Date(departure).getTime() >= now : true;
                         const seats = Number(ride.available_seats) || 0;
                         const pricePerSeat = Number(ride.price_per_seat) || 0;
+                        const rideIdStr = ride.id?.toString() || '';
                         items.push({
                             id: `ride-${ride.id}`,
                             type: 'owner',
@@ -119,13 +134,14 @@ export default function MyRidesScreen() {
                             to: ride.to_location || 'Destination',
                             time: formatRideTime(departure),
                             departureTime: departure || '',
-                            driver: session.name || 'You',
+                            driver: getDisplayName(session.name) || 'You',
                             driverPhone: session.phone,
                             price: seats * pricePerSeat,
                             pricePerSeat,
                             seats,
                             status: isUpcoming ? 'confirmed' : 'completed',
-                            rideId: ride.id?.toString(),
+                            rideId: rideIdStr,
+                            canEdit: isUpcoming && rideIdStr.length > 0 && !ridesWithBookings.has(rideIdStr),
                         });
                     }
 
@@ -188,6 +204,22 @@ export default function MyRidesScreen() {
                     <Text style={styles.viewButtonText}>View Booking →</Text>
                 </TouchableOpacity>
             )}
+
+            {ride.type === 'owner' && ride.canEdit && ride.rideId ? (
+                <TouchableOpacity
+                    style={styles.editButton}
+                    onPress={() =>
+                        router.push({
+                            pathname: '/offer',
+                            params: { rideId: ride.rideId },
+                        })
+                    }
+                >
+                    <Text style={styles.editButtonText}>Edit ride ✏️</Text>
+                </TouchableOpacity>
+            ) : ride.type === 'owner' && ride.status === 'confirmed' ? (
+                <Text style={styles.editHint}>Bookings exist — editing is locked</Text>
+            ) : null}
         </View>
     );
 
@@ -318,4 +350,15 @@ const styles = StyleSheet.create({
         marginTop: 12,
     },
     viewButtonText: { color: '#fff', fontWeight: '600', fontSize: 15 },
+    editButton: {
+        borderWidth: 1.5,
+        borderColor: '#1a73e8',
+        borderRadius: 10,
+        padding: 12,
+        alignItems: 'center',
+        marginTop: 12,
+        backgroundColor: '#fff',
+    },
+    editButtonText: { color: '#1a73e8', fontWeight: '600', fontSize: 15 },
+    editHint: { fontSize: 12, color: '#888', marginTop: 10, fontStyle: 'italic' },
 });

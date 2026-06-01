@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { GooglePlacesAutocomplete } from 'react-native-google-places-autocomplete';
 
@@ -8,10 +8,22 @@ interface LocationInputProps {
     placeholder: string;
     onLocationSelect: (address: string) => void;
     variant?: 'pickup' | 'dropoff';
+    initialValue?: string;
 }
 
-export default function LocationInput({ placeholder, onLocationSelect, variant }: LocationInputProps) {
+export default function LocationInput({
+    placeholder,
+    onLocationSelect,
+    variant,
+    initialValue,
+}: LocationInputProps) {
     const ref = useRef<any>(null);
+
+    useEffect(() => {
+        if (initialValue && ref.current?.setAddressText) {
+            ref.current.setAddressText(initialValue);
+        }
+    }, [initialValue]);
 
     const handleClear = () => {
         ref.current?.clear();

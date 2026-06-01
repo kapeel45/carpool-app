@@ -37,6 +37,12 @@ export const FIND_RIDE_REFRESH_MS = 60 * 1000;
 
 export const parseRideDepartureTime = parseDirectusDatetime;
 
+export const getAvailableSeats = (ride: { available_seats?: number | string | null }) =>
+    Math.max(0, Number(ride.available_seats) || 0);
+
+export const hasAvailableSeats = (ride: { available_seats?: number | string | null }) =>
+    getAvailableSeats(ride) > 0;
+
 export const isRideSearchable = (ride: {
     departure_time?: string | null;
     status?: string | null;
@@ -229,16 +235,62 @@ export const resolveRelationId = (value: unknown): string | undefined => {
     return String(value);
 };
 
+/** Human-readable name only — never falls back to phone (used for UI labels). */
+export const getDisplayName = (name?: string | null, _phone?: string | null) => {
+    return name?.trim() || '';
+};
+
+export const buildSessionFromUser = (user: {
+    id: string | number;
+    phone?: string;
+    name?: string | null;
+    gender?: string | null;
+    email?: string | null;
+    email_verified?: boolean;
+    car_model?: string | null;
+    car_number?: string | null;
+    car_color?: string | null;
+}) => ({
+    loggedIn: true,
+    userId: user.id,
+    phone: user.phone,
+    name: user.name?.trim() || '',
+    gender: user.gender,
+    email: user.email,
+    emailVerified: user.email_verified,
+    carModel: user.car_model,
+    carNumber: user.car_number,
+    carColor: user.car_color,
+});
+
+/** Fields that exist on a typical app_users collection (omit optional columns like gender). */
+const USER_READ_FIELDS = 'id,phone,name,mpin,email,email_verified,car_model,car_number,car_color';
+const USER_READ_FIELDS_MINIMAL = 'id,phone,name,mpin';
+
+export const getUserById = async (userId: string | number) => {
+    const id = String(userId);
+    if (!id) return null;
+
+    for (const fields of [USER_READ_FIELDS, USER_READ_FIELDS_MINIMAL]) {
+        try {
+            const response = await api.get(`/items/app_users/${id}`, { params: { fields } });
+            return response.data?.data ?? null;
+        } catch (error) {
+            console.warn(`getUserById(${id}) fields=${fields} failed:`, error);
+        }
+    }
+    return null;
+};
+
 export const resolveDisplayName = async (value?: string, fallback = 'Owner') => {
     if (!value) return fallback;
     const normalized = normalizePhone(value);
-    if (normalized.length === 10 && value.replace(/\D/g, '') === normalized) {
+    if (normalized.length === 10 && value.replace(/\D/g, '').slice(-10) === normalized) {
         try {
             const user = await findUserByPhone(normalized);
-            if (user?.name) return user.name;
-            return `+91 ${normalized}`;
+            return getDisplayName(user?.name) || fallback;
         } catch {
-            return `+91 ${normalized}`;
+            return fallback;
         }
     }
     return value;
@@ -248,22 +300,25 @@ export const findUserByPhone = async (phone: string, excludeUserId?: string) => 
     const normalized = normalizePhone(phone);
     if (normalized.length !== 10) return null;
 
-    try {
-        const response = await api.get('/items/app_users', {
-            params: {
-                'filter[phone][_eq]': normalized,
-                fields: 'id,phone,name,mpin,email,email_verified,gender,car_model,car_number,car_color',
-                limit: 1,
-            },
-        });
-        const user = response.data?.data?.[0];
-        if (!user) return null;
-        if (excludeUserId && String(user.id) === String(excludeUserId)) return null;
-        return user;
-    } catch (error) {
-        console.warn('findUserByPhone failed:', error);
-        return null;
+    const filterParams = {
+        'filter[phone][_eq]': normalized,
+        limit: 1,
+    };
+
+    for (const fields of [USER_READ_FIELDS, USER_READ_FIELDS_MINIMAL]) {
+        try {
+            const response = await api.get('/items/app_users', {
+                params: { ...filterParams, fields },
+            });
+            const user = response.data?.data?.[0];
+            if (!user) return null;
+            if (excludeUserId && String(user.id) === String(excludeUserId)) return null;
+            return user;
+        } catch (error) {
+            console.warn(`findUserByPhone fields=${fields} failed:`, error);
+        }
     }
+    return null;
 };
 
 export const assertPhoneAvailable = async (phone: string, forUserId?: string) => {
@@ -280,19 +335,23 @@ export const resolveOwnerInfo = async (value?: string) => {
         const user = await findUserByPhone(normalized);
         if (user) {
             return {
-                name: user.name || `+91 ${normalized}`,
+                name: getDisplayName(user.name) || 'Owner',
                 gender: user.gender as string | undefined,
             };
         }
-        return { name: `+91 ${normalized}`, gender: undefined };
+        return { name: 'Owner', gender: undefined };
     }
     return { name: value, gender: undefined };
 };
 
-export const createUser = async (phone: string) => {
+export const createUser = async (phone: string, name: string) => {
     const normalized = normalizePhone(phone);
+    const trimmedName = name?.trim();
     if (normalized.length !== 10) {
         throw new Error('Enter a valid 10-digit mobile number.');
+    }
+    if (!trimmedName) {
+        throw new Error('Please enter your name.');
     }
     const existing = await findUserByPhone(normalized);
     if (existing) return existing;
@@ -300,18 +359,24 @@ export const createUser = async (phone: string) => {
     try {
         const response = await api.post('/items/app_users', {
             phone: normalized,
+            name: trimmedName,
             total_rides: 0,
             total_earnings: 0,
             status: 'active',
         });
-        return response.data.data;
+        const created = response.data?.data;
+        if (!created?.id) {
+            throw new Error('Account could not be created. Check Directus permissions for app_users.');
+        }
+        return created;
     } catch (error: any) {
         const message = error?.response?.data?.errors?.[0]?.message || '';
         if (message.toLowerCase().includes('unique') || message.toLowerCase().includes('duplicate')) {
             const existingAfterRace = await findUserByPhone(normalized);
             if (existingAfterRace) return existingAfterRace;
         }
-        throw error;
+        const detail = error?.response?.data?.errors?.[0]?.message;
+        throw new Error(detail || 'Could not create account. Try again.');
     }
 };
 
@@ -336,12 +401,194 @@ export const createRide = async (rideData: any) => {
     return response.data.data;
 };
 
+export const countActiveBookingsForRide = async (rideId: string | number) => {
+    const id = String(rideId);
+    if (!id) return 0;
+
+    try {
+        const response = await api.get('/items/bookings', {
+            params: {
+                'filter[ride_id][_eq]': id,
+                ...ACTIVE_BOOKING_QUERY,
+                fields: 'id,ride_id,payment_status,status',
+                limit: 100,
+            },
+        });
+        return filterActiveBookings(response.data?.data || []).length;
+    } catch (error) {
+        console.warn('countActiveBookingsForRide failed:', error);
+        return 0;
+    }
+};
+
+/** Ride IDs that have at least one non-cancelled booking. */
+export const getRideIdsWithActiveBookings = async (): Promise<Set<string>> => {
+    try {
+        const response = await api.get('/items/bookings', {
+            params: {
+                ...ACTIVE_BOOKING_QUERY,
+                fields: 'id,ride_id,payment_status,status',
+                limit: 500,
+            },
+        });
+        const ids = new Set<string>();
+        for (const booking of filterActiveBookings(
+            (response.data?.data || []) as Array<{
+                ride_id?: unknown;
+                payment_status?: string | null;
+                status?: string | null;
+            }>
+        )) {
+            const rideId = resolveRelationId(booking.ride_id);
+            if (rideId) ids.add(rideId);
+        }
+        return ids;
+    } catch (error) {
+        console.warn('getRideIdsWithActiveBookings failed:', error);
+        return new Set();
+    }
+};
+
+export const updateRide = async (rideId: string | number, rideData: Record<string, unknown>) => {
+    const id = String(rideId);
+    const activeCount = await countActiveBookingsForRide(id);
+    if (activeCount > 0) {
+        throw new Error('Cannot edit this ride — someone has already booked seats.');
+    }
+
+    const response = await api.patch(`/items/rides/${id}`, rideData);
+    return response.data?.data;
+};
+
+/** Positive delta adds seats (cancel); negative delta removes seats (book). */
+export const adjustRideAvailableSeats = async (
+    rideId: string | number,
+    seatDelta: number
+): Promise<number> => {
+    const id = String(rideId);
+    const delta = Math.trunc(seatDelta);
+    if (!id || delta === 0) {
+        const ride = await getRideById(id);
+        return getAvailableSeats(ride);
+    }
+
+    const ride = await getRideById(id);
+    const current = getAvailableSeats(ride);
+    const next = current + delta;
+    if (next < 0) {
+        throw new Error(
+            delta < 0
+                ? `Only ${current} seat(s) left on this ride.`
+                : 'Invalid seat count for this ride.'
+        );
+    }
+
+    const response = await api.patch(`/items/rides/${id}`, { available_seats: next });
+    return getAvailableSeats(response.data?.data ?? { available_seats: next });
+};
+
 export const createBooking = async (bookingData: any) => {
+    const rideId = resolveRelationId(bookingData.ride_id) || String(bookingData.ride_id || '');
+    const seatsBooked = Math.max(1, Number(bookingData.seats_booked) || 1);
+
+    if (!rideId) {
+        throw new Error('Ride not found.');
+    }
+
+    const ride = await getRideById(rideId);
+    const available = getAvailableSeats(ride);
+    if (available < seatsBooked) {
+        throw new Error(
+            available === 0
+                ? 'This ride is full. No seats available.'
+                : `Only ${available} seat(s) left on this ride.`
+        );
+    }
+
     const response = await api.post('/items/bookings', {
         ...bookingData,
+        ride_id: rideId,
+        seats_booked: seatsBooked,
         rider_phone: normalizePhone(bookingData.rider_phone || ''),
+        payment_status: bookingData.payment_status || 'pending',
     });
-    return response.data.data;
+    const booking = response.data?.data;
+    if (!booking?.id) {
+        throw new Error('Could not create booking.');
+    }
+
+    try {
+        await adjustRideAvailableSeats(rideId, -seatsBooked);
+    } catch (error) {
+        try {
+            await api.patch(`/items/bookings/${booking.id}`, {
+                payment_status: 'cancelled',
+                status: 'cancelled',
+            });
+        } catch {
+            // best-effort rollback
+        }
+        throw error;
+    }
+
+    return booking;
+};
+
+export const isCancelledBooking = (booking: {
+    payment_status?: string | null;
+    status?: string | null;
+}) => {
+    const payment = (booking.payment_status || '').toLowerCase();
+    const status = (booking.status || '').toLowerCase();
+    return payment === 'cancelled' || status === 'cancelled';
+};
+
+export const filterActiveBookings = <
+    T extends { payment_status?: string | null; status?: string | null },
+>(
+    bookings: T[]
+) => bookings.filter((booking) => !isCancelledBooking(booking));
+
+/** Exclude cancelled bookings from Directus list queries. */
+const ACTIVE_BOOKING_QUERY = {
+    'filter[payment_status][_neq]': 'cancelled',
+};
+
+export const cancelBooking = async (bookingId: string) => {
+    const id = String(bookingId);
+    if (!id) throw new Error('Booking not found.');
+
+    const existing = await getBookingById(id);
+    if (!existing) throw new Error('Booking not found.');
+    if (isCancelledBooking(existing)) return existing;
+
+    const rideId = resolveRelationId(existing.ride_id);
+    const seatsBooked = Math.max(1, Number(existing.seats_booked) || 1);
+
+    let cancelled: unknown;
+    try {
+        const response = await api.patch(`/items/bookings/${id}`, {
+            payment_status: 'cancelled',
+            status: 'cancelled',
+        });
+        cancelled = response.data?.data;
+    } catch (error: any) {
+        const message = error?.response?.data?.errors?.[0]?.message || '';
+        if (message.toLowerCase().includes('status')) {
+            const response = await api.patch(`/items/bookings/${id}`, {
+                payment_status: 'cancelled',
+            });
+            cancelled = response.data?.data;
+        } else {
+            throw error;
+        }
+    }
+
+    if (rideId) {
+        await adjustRideAvailableSeats(rideId, seatsBooked);
+    }
+
+    return cancelled;
 };
 
 export const getBookingById = async (id: string) => {
@@ -371,7 +618,8 @@ export const getUserStats = async (phone: string): Promise<UserStats> => {
             api.get('/items/bookings', {
                 params: {
                     'filter[rider_phone][_eq]': normalized,
-                    fields: 'id,total_price',
+                    ...ACTIVE_BOOKING_QUERY,
+                    fields: 'id,total_price,payment_status,status',
                     limit: 100,
                 },
             }),
@@ -384,12 +632,17 @@ export const getUserStats = async (phone: string): Promise<UserStats> => {
             }),
         ]);
 
-        const bookings = bookingsResponse.data?.data || [];
+        const bookings = filterActiveBookings(
+            (bookingsResponse.data?.data || []) as Array<{
+                total_price?: number | string;
+                payment_status?: string | null;
+                status?: string | null;
+            }>
+        );
         const rides = ridesResponse.data?.data || [];
 
         const saved = bookings.reduce(
-            (sum: number, booking: { total_price?: number | string }) =>
-                sum + (Number(booking.total_price) || 0),
+            (sum, booking) => sum + (Number(booking.total_price) || 0),
             0
         );
 
@@ -410,6 +663,7 @@ export const getUserBookings = async (phone: string) => {
 
     const params = {
         'filter[rider_phone][_eq]': normalized,
+        ...ACTIVE_BOOKING_QUERY,
         sort: '-date_created',
         limit: 50,
     };
@@ -419,16 +673,16 @@ export const getUserBookings = async (phone: string) => {
             params: {
                 ...params,
                 fields:
-                    'id,ride_id,total_price,seats_booked,payment_status,date_created,rider_name,rider_phone',
+                    'id,ride_id,total_price,seats_booked,payment_status,status,date_created,rider_name,rider_phone',
             },
         });
-        return response.data?.data || [];
+        return filterActiveBookings(response.data?.data || []);
     } catch (error) {
         console.warn('getUserBookings detailed fields failed, retrying:', error);
         const response = await api.get('/items/bookings', {
             params: { ...params, fields: '*' },
         });
-        return response.data?.data || [];
+        return filterActiveBookings(response.data?.data || []);
     }
 };
 

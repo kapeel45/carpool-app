@@ -1,10 +1,23 @@
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LocationInput from './components/LocationInput';
 import RideMap from './components/RideMap';
-import { getRides, createBooking, resolveOwnerInfo, filterRidesForFind, FIND_RIDE_REFRESH_MS } from './config/api';
+import SeatSelector from './components/SeatSelector';
+import {
+    cancelBooking,
+    createBooking,
+    filterRidesForFind,
+    FIND_RIDE_REFRESH_MS,
+    getAvailableSeats,
+    getDisplayName,
+    getRides,
+    getUserBookings,
+    resolveOwnerInfo,
+    resolveRelationId,
+} from './config/api';
 import { getGenderDisplay } from './config/gender';
 import { getSession } from './config/session';
 
@@ -29,21 +42,57 @@ export default function SearchScreen() {
     const [loading, setLoading] = useState(false);
     const [searched, setSearched] = useState(false);
     const [userPhone, setUserPhone] = useState('');
+    const [userName, setUserName] = useState('');
     const [bookedIds, setBookedIds] = useState<Set<string>>(new Set());
+    const [bookingMetaByRideId, setBookingMetaByRideId] = useState<
+        Record<string, { bookingId: string; seatsBooked: number }>
+    >({});
+    const [seatsToBookByRideId, setSeatsToBookByRideId] = useState<Record<string, number>>({});
     const [bookingRideId, setBookingRideId] = useState<string | null>(null);
     const [driverProfiles, setDriverProfiles] = useState<
         Record<string, { name: string; gender?: string }>
     >({});
 
+    const syncActiveBookings = async (phone: string) => {
+        try {
+            const bookings = await getUserBookings(phone);
+            const rideIds = new Set<string>();
+            const metaMap: Record<string, { bookingId: string; seatsBooked: number }> = {};
+            for (const booking of bookings) {
+                const rideId = resolveRelationId(booking.ride_id);
+                if (!rideId) continue;
+                rideIds.add(rideId);
+                metaMap[rideId] = {
+                    bookingId: String(booking.id),
+                    seatsBooked: Math.max(1, Number(booking.seats_booked) || 1),
+                };
+            }
+            setBookedIds(rideIds);
+            setBookingMetaByRideId(metaMap);
+        } catch {
+            setBookedIds(new Set());
+            setBookingMetaByRideId({});
+        }
+    };
+
     useEffect(() => {
         const checkSession = async () => {
             const session = await getSession();
             if (session?.loggedIn) {
-                setUserPhone(session.phone);
+                const phone = session.phone || '';
+                setUserPhone(phone);
+                setUserName(getDisplayName(session.name, session.phone));
+                if (phone) await syncActiveBookings(phone);
             }
         };
         checkSession();
     }, []);
+
+    useFocusEffect(
+        useCallback(() => {
+            if (userPhone) syncActiveBookings(userPhone);
+        }, [userPhone])
+    );
 
     useEffect(() => {
         if (!userPhone) return;
@@ -109,9 +158,37 @@ export default function SearchScreen() {
         }
     };
 
+    const getSeatsToBook = (rideId: string, maxAvailable: number) => {
+        const raw = seatsToBookByRideId[rideId] ?? 1;
+        return Math.min(Math.max(1, raw), Math.max(1, maxAvailable));
+    };
+
+    const setSeatsToBook = (rideId: string, next: number, maxAvailable: number) => {
+        const clamped = Math.min(Math.max(1, next), Math.max(1, maxAvailable));
+        setSeatsToBookByRideId((prev) => ({ ...prev, [rideId]: clamped }));
+    };
+
+    const bumpRideSeatsInList = (rideId: string, seatDelta: number) => {
+        setRides((prev) =>
+            prev.map((ride) => {
+                if (ride.id.toString() !== rideId) return ride;
+                return {
+                    ...ride,
+                    available_seats: Math.max(0, getAvailableSeats(ride) + seatDelta),
+                };
+            })
+        );
+    };
+
     const handleBook = async (item: any) => {
         const rideId = item.id.toString();
         if (bookedIds.has(rideId) || bookingRideId === rideId) return;
+
+        const seatsLeft = getAvailableSeats(item);
+        if (seatsLeft < 1) {
+            Alert.alert('Ride full', 'No seats available on this ride.');
+            return;
+        }
 
         setBookingRideId(rideId);
         try {
@@ -121,17 +198,30 @@ export default function SearchScreen() {
                 router.push('/login');
                 return;
             }
-            await createBooking({
+            const seatsBooked = getSeatsToBook(rideId, seatsLeft);
+            const pricePerSeat = parseInt(item.price_per_seat, 10) || 0;
+            const booking = await createBooking({
                 ride_id: rideId,
-                rider_name: session?.name || session?.phone,
+                rider_name: session?.name?.trim() || session?.phone,
                 rider_phone: session?.phone,
-                seats_booked: 1,
-                total_price: parseInt(item.price_per_seat),
+                seats_booked: seatsBooked,
+                total_price: pricePerSeat * seatsBooked,
                 payment_status: 'pending',
             });
             setBookedIds((prev) => new Set(prev).add(rideId));
-        } catch (error) {
-            Alert.alert('Error', 'Could not book this ride. Try again.');
+            if (booking?.id) {
+                setBookingMetaByRideId((prev) => ({
+                    ...prev,
+                    [rideId]: { bookingId: String(booking.id), seatsBooked },
+                }));
+            }
+            bumpRideSeatsInList(rideId, -seatsBooked);
+        } catch (error: any) {
+            const msg =
+                error?.response?.data?.errors?.[0]?.message ||
+                error?.message ||
+                'Could not book this ride. Try again.';
+            Alert.alert('Error', msg);
         } finally {
             setBookingRideId(null);
         }
@@ -161,12 +251,32 @@ export default function SearchScreen() {
                 {
                     text: 'Yes, Cancel',
                     style: 'destructive',
-                    onPress: () => {
-                        setBookedIds((prev) => {
-                            const next = new Set(prev);
-                            next.delete(rideId);
-                            return next;
-                        });
+                    onPress: async () => {
+                        const meta = bookingMetaByRideId[rideId];
+                        if (!meta?.bookingId) {
+                            Alert.alert('Error', 'Could not find this booking to cancel.');
+                            return;
+                        }
+                        try {
+                            await cancelBooking(meta.bookingId);
+                            setBookedIds((prev) => {
+                                const next = new Set(prev);
+                                next.delete(rideId);
+                                return next;
+                            });
+                            setBookingMetaByRideId((prev) => {
+                                const next = { ...prev };
+                                delete next[rideId];
+                                return next;
+                            });
+                            bumpRideSeatsInList(rideId, meta.seatsBooked);
+                        } catch (error: any) {
+                            const msg =
+                                error?.response?.data?.errors?.[0]?.message ||
+                                error?.message ||
+                                'Could not cancel booking. Try again.';
+                            Alert.alert('Error', msg);
+                        }
                     },
                 },
             ]
@@ -231,14 +341,20 @@ export default function SearchScreen() {
                     const isBooked = bookedIds.has(rideId);
                     const isBooking = bookingRideId === rideId;
                     const driver = driverProfiles[rideId];
-                    const driverName = driver?.name || item.driver_name || 'Owner';
+                    const ownerName = driver?.name || 'Owner';
                     const genderDisplay = getGenderDisplay(driver?.gender);
+                    const seatsLeft = getAvailableSeats(item);
+                    const isFull = seatsLeft < 1 && !isBooked;
+                    const seatsToBook = getSeatsToBook(rideId, seatsLeft);
+                    const pricePerSeat = parseInt(item.price_per_seat, 10) || 0;
+                    const bookingTotal = pricePerSeat * seatsToBook;
+                    const bookedMeta = bookingMetaByRideId[rideId];
 
                     return (
                         <View key={rideId} style={styles.rideCard}>
                             <View style={styles.rideTop}>
                                 <View style={styles.driverBlock}>
-                                    <Text style={styles.driverName}>🧑 {driverName}</Text>
+                                    <Text style={styles.driverName}>🧑 {ownerName}</Text>
                                     {genderDisplay ? (
                                         <Text style={styles.genderMeta}>
                                             {genderDisplay.icon} {genderDisplay.label}
@@ -254,7 +370,30 @@ export default function SearchScreen() {
                                 </View>
                             </View>
                             <View style={styles.rideBottom}>
-                                <Text style={styles.meta}>💺 {item.available_seats} seats left</Text>
+                                <View style={styles.rideBottomLeft}>
+                                    <Text style={styles.meta}>
+                                        💺 {seatsLeft} seat{seatsLeft === 1 ? '' : 's'} left
+                                    </Text>
+                                    {isBooked && bookedMeta ? (
+                                        <Text style={styles.bookedSeatsMeta}>
+                                            Your booking: {bookedMeta.seatsBooked} seat
+                                            {bookedMeta.seatsBooked === 1 ? '' : 's'}
+                                        </Text>
+                                    ) : !isFull ? (
+                                        <View style={styles.seatPickerRow}>
+                                            <SeatSelector
+                                                value={seatsToBook}
+                                                max={seatsLeft}
+                                                onChange={(n) => setSeatsToBook(rideId, n, seatsLeft)}
+                                                disabled={isBooking}
+                                                label="Book seats"
+                                            />
+                                            {pricePerSeat > 0 ? (
+                                                <Text style={styles.totalHint}>₹{bookingTotal} total</Text>
+                                            ) : null}
+                                        </View>
+                                    ) : null}
+                                </View>
                                 {isBooking ? (
                                     <View style={[styles.bookButton, styles.bookingButton]}>
                                         <Text style={styles.bookText}>Booking...</Text>
@@ -274,6 +413,10 @@ export default function SearchScreen() {
                                         >
                                             <Text style={styles.bookText}>Cancel</Text>
                                         </TouchableOpacity>
+                                    </View>
+                                ) : isFull ? (
+                                    <View style={[styles.bookButton, styles.fullButton]}>
+                                        <Text style={styles.bookText}>Full</Text>
                                     </View>
                                 ) : (
                                     <TouchableOpacity
@@ -387,9 +530,20 @@ const styles = StyleSheet.create({
     rideMiddle: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 },
     routeBlock: { flex: 1, gap: 4 },
     route: { fontSize: 14, color: '#555', flexWrap: 'wrap' },
-    rideBottom: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+    rideBottom: {
+        flexDirection: 'row',
+        alignItems: 'flex-end',
+        justifyContent: 'space-between',
+        marginBottom: 12,
+        gap: 12,
+    },
+    rideBottomLeft: { flex: 1 },
+    seatPickerRow: { marginTop: 10, flexDirection: 'row', alignItems: 'flex-end', gap: 16 },
+    totalHint: { fontSize: 14, fontWeight: '700', color: '#1a73e8', marginBottom: 8 },
+    bookedSeatsMeta: { fontSize: 12, color: '#34a853', marginTop: 4, fontWeight: '600' },
     meta: { fontSize: 13, color: '#666' },
     bookButton: { backgroundColor: '#1a73e8', paddingHorizontal: 20, paddingVertical: 8, borderRadius: 8, minWidth: 96, alignItems: 'center' },
+    fullButton: { backgroundColor: '#9e9e9e' },
     bookedButton: { backgroundColor: '#34a853', paddingHorizontal: 0, paddingVertical: 0 },
     bookedToggle: { flexDirection: 'row', alignItems: 'stretch' },
     callPart: { paddingHorizontal: 14, paddingVertical: 8, justifyContent: 'center', alignItems: 'center' },

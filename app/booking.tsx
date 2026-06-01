@@ -3,17 +3,29 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import RideMap from './components/RideMap';
-import { createBooking, getBookingById, getRideById, normalizePhone, resolveDisplayName, resolveRelationId } from './config/api';
+import SeatSelector from './components/SeatSelector';
+import {
+    cancelBooking,
+    createBooking,
+    getAvailableSeats,
+    getBookingById,
+    getRideById,
+    isCancelledBooking,
+    normalizePhone,
+    resolveDisplayName,
+    resolveRelationId,
+} from './config/api';
 import { getSession } from './config/session';
 
 type BookingDetails = {
     from: string;
     to: string;
     time: string;
-    price: string;
+    pricePerSeat: number;
     driver: string;
     driverPhone: string;
-    seats: string;
+    availableSeats: number;
+    seatsBooked: number;
     paymentStatus: string;
 };
 
@@ -34,18 +46,23 @@ const paramAsString = (value: string | string[] | undefined) => {
     return value || '';
 };
 
-const buildDetailsFromRide = async (ride: any, priceOverride?: string, paymentStatus = 'pending') => {
+const buildDetailsFromRide = async (
+    ride: any,
+    options?: { pricePerSeat?: number; paymentStatus?: string; seatsBooked?: number }
+) => {
     const driverRaw = ride?.driver_name || '';
     const driverName = await resolveDisplayName(driverRaw, 'Owner');
+    const pricePerSeat = options?.pricePerSeat ?? (Number(ride?.price_per_seat) || 0);
     return {
         from: ride?.from_location || 'Pickup',
         to: ride?.to_location || 'Destination',
         time: ride?.departure_time || '',
-        price: priceOverride || String(ride?.price_per_seat || ''),
+        pricePerSeat,
         driver: driverName,
         driverPhone: normalizePhone(driverRaw) || driverRaw,
-        seats: String(ride?.available_seats || 1),
-        paymentStatus,
+        availableSeats: getAvailableSeats(ride),
+        seatsBooked: options?.seatsBooked ?? 1,
+        paymentStatus: options?.paymentStatus || 'pending',
     };
 };
 
@@ -72,6 +89,10 @@ export default function BookingScreen() {
     const [details, setDetails] = useState<BookingDetails | null>(null);
     const [loading, setLoading] = useState(true);
     const [bookingDone, setBookingDone] = useState(viewOnly);
+    const [activeBookingId, setActiveBookingId] = useState(bookingId);
+    const [bookingCancelled, setBookingCancelled] = useState(false);
+    const [seatsToBook, setSeatsToBook] = useState(1);
+    const [confirming, setConfirming] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -81,27 +102,40 @@ export default function BookingScreen() {
             try {
                 if (bookingId) {
                     const booking = await getBookingById(bookingId);
+                    if (!cancelled && booking && isCancelledBooking(booking)) {
+                        setBookingCancelled(true);
+                    }
                     const rideRef = booking?.ride_id;
                     const ride =
                         typeof rideRef === 'object' && rideRef !== null
                             ? rideRef
                             : await getRideById(resolveRelationId(rideRef) || '');
-                    const nextDetails = await buildDetailsFromRide(
-                        ride,
-                        String(ride?.price_per_seat || booking?.total_price || ''),
-                        booking?.payment_status || 'pending'
-                    );
-                    if (!cancelled) setDetails(nextDetails);
+                    const seatsBooked = Math.max(1, Number(booking?.seats_booked) || 1);
+                    const pricePerSeat =
+                        Number(ride?.price_per_seat) ||
+                        Math.round(Number(booking?.total_price) / seatsBooked) ||
+                        0;
+                    const nextDetails = await buildDetailsFromRide(ride, {
+                        pricePerSeat,
+                        paymentStatus: booking?.payment_status || 'pending',
+                        seatsBooked,
+                    });
+                    if (!cancelled) {
+                        setDetails(nextDetails);
+                        setSeatsToBook(seatsBooked);
+                    }
                     return;
                 }
 
                 if (rideId) {
                     const ride = await getRideById(rideId);
-                    const nextDetails = await buildDetailsFromRide(
-                        ride,
-                        paramAsString(params.price) || undefined
-                    );
-                    if (!cancelled) setDetails(nextDetails);
+                    const pricePerSeat =
+                        parseInt(paramAsString(params.price), 10) || Number(ride?.price_per_seat) || 0;
+                    const nextDetails = await buildDetailsFromRide(ride, { pricePerSeat });
+                    if (!cancelled) {
+                        setDetails(nextDetails);
+                        setSeatsToBook(1);
+                    }
                     return;
                 }
 
@@ -109,18 +143,21 @@ export default function BookingScreen() {
                 const driverName = driverRaw
                     ? await resolveDisplayName(driverRaw, paramAsString(params.driver) || 'Owner')
                     : paramAsString(params.driver) || 'Owner';
+                const availableSeats = parseInt(paramAsString(params.seats), 10) || 1;
 
                 if (!cancelled) {
                     setDetails({
                         from: paramAsString(params.from) || 'Pickup',
                         to: paramAsString(params.to) || 'Destination',
                         time: paramAsString(params.time),
-                        price: paramAsString(params.price),
+                        pricePerSeat: parseInt(paramAsString(params.price), 10) || 0,
                         driver: driverName,
                         driverPhone: normalizePhone(driverRaw) || driverRaw,
-                        seats: paramAsString(params.seats) || '1',
+                        availableSeats,
+                        seatsBooked: 1,
                         paymentStatus: 'pending',
                     });
+                    setSeatsToBook(1);
                 }
             } catch (error) {
                 console.error('Failed to load booking details:', error);
@@ -138,29 +175,62 @@ export default function BookingScreen() {
         };
     }, [bookingId, rideId]);
 
-    useEffect(() => {
-        if (viewOnly || !rideId || bookingDone) return;
+    const handleConfirmBooking = async () => {
+        if (!rideId || bookingDone || viewOnly) return;
 
-        const saveBooking = async () => {
-            try {
-                const session = await getSession();
-                await createBooking({
-                    ride_id: rideId,
-                    rider_name: session?.name || session?.phone,
-                    rider_phone: session?.phone,
-                    seats_booked: 1,
-                    total_price: parseInt(paramAsString(params.price), 10),
-                    payment_status: 'pending',
-                });
-                setBookingDone(true);
-            } catch (error) {
-                console.error('Booking save error:', error);
+        const available = details?.availableSeats ?? 0;
+        if (available < 1) {
+            Alert.alert('Ride full', 'No seats available on this ride.');
+            return;
+        }
+
+        const seats = Math.min(Math.max(1, seatsToBook), available);
+        setConfirming(true);
+        try {
+            const session = await getSession();
+            if (!session?.loggedIn) {
+                Alert.alert('Login Required', 'Please log in to book a ride.');
+                router.push('/login');
+                return;
             }
-        };
-        saveBooking();
-    }, [viewOnly, rideId, bookingDone]);
+            const pricePerSeat = details?.pricePerSeat || 0;
+            const booking = await createBooking({
+                ride_id: rideId,
+                rider_name: session?.name?.trim() || session?.phone,
+                rider_phone: session?.phone,
+                seats_booked: seats,
+                total_price: pricePerSeat * seats,
+                payment_status: 'pending',
+            });
+            if (booking?.id) setActiveBookingId(String(booking.id));
+            setDetails((prev) =>
+                prev
+                    ? {
+                          ...prev,
+                          availableSeats: Math.max(0, prev.availableSeats - seats),
+                          seatsBooked: seats,
+                      }
+                    : prev
+            );
+            setBookingDone(true);
+        } catch (error: any) {
+            const msg =
+                error?.response?.data?.errors?.[0]?.message ||
+                error?.message ||
+                'Could not book this ride.';
+            Alert.alert('Booking failed', msg);
+        } finally {
+            setConfirming(false);
+        }
+    };
 
     const handleCancel = () => {
+        const idToCancel = activeBookingId || bookingId;
+        if (!idToCancel) {
+            Alert.alert('Error', 'Could not find this booking to cancel.');
+            return;
+        }
+
         Alert.alert(
             'Cancel Booking?',
             'Are you sure you want to cancel this booking?',
@@ -169,10 +239,16 @@ export default function BookingScreen() {
                 {
                     text: 'Yes, Cancel',
                     style: 'destructive',
-                    onPress: () => {
-                        Alert.alert('Cancelled', 'Your booking has been cancelled.', [
-                            { text: 'OK', onPress: () => router.replace('/') },
-                        ]);
+                    onPress: async () => {
+                        try {
+                            await cancelBooking(idToCancel);
+                            setBookingCancelled(true);
+                            Alert.alert('Cancelled', 'Your booking has been cancelled.', [
+                                { text: 'OK', onPress: () => router.replace('/search') },
+                            ]);
+                        } catch {
+                            Alert.alert('Error', 'Could not cancel booking. Try again.');
+                        }
                     },
                 },
             ]
@@ -196,6 +272,11 @@ export default function BookingScreen() {
             : details?.paymentStatus === 'pending'
               ? 'Pending'
               : details?.paymentStatus || 'Pending';
+
+    const displaySeats = bookingDone ? (details?.seatsBooked ?? seatsToBook) : seatsToBook;
+    const maxSeats = details?.availableSeats ?? 1;
+    const totalPrice = (details?.pricePerSeat || 0) * displaySeats;
+    const showSeatPicker = !viewOnly && !bookingDone && !bookingCancelled && Boolean(rideId);
 
     return (
         <View style={styles.container}>
@@ -226,11 +307,45 @@ export default function BookingScreen() {
                         />
                     </View>
 
-                    <View style={styles.successBanner}>
-                        <Text style={styles.successIcon}>✅</Text>
-                        <Text style={styles.successTitle}>Ride Booked!</Text>
-                        <Text style={styles.successSub}>Your seat is confirmed</Text>
-                    </View>
+                    {bookingDone ? (
+                        <View style={styles.successBanner}>
+                            <Text style={styles.successIcon}>✅</Text>
+                            <Text style={styles.successTitle}>Ride Booked!</Text>
+                            <Text style={styles.successSub}>
+                                {displaySeats} seat{displaySeats === 1 ? '' : 's'} confirmed
+                            </Text>
+                        </View>
+                    ) : showSeatPicker ? (
+                        <View style={styles.card}>
+                            <Text style={styles.sectionTitle}>How many seats?</Text>
+                            <Text style={styles.seatSub}>
+                                Default is 1 — use + / − to change before confirming
+                            </Text>
+                            <View style={styles.seatPickerCenter}>
+                                <SeatSelector
+                                    value={Math.min(seatsToBook, Math.max(1, maxSeats))}
+                                    max={Math.max(1, maxSeats)}
+                                    onChange={setSeatsToBook}
+                                    disabled={confirming}
+                                    label=""
+                                />
+                            </View>
+                            <Text style={styles.totalLine}>
+                                Total: ₹{totalPrice} ({displaySeats} × ₹{details?.pricePerSeat || 0})
+                            </Text>
+                            <TouchableOpacity
+                                style={[styles.confirmButton, confirming && styles.confirmButtonDisabled]}
+                                onPress={handleConfirmBooking}
+                                disabled={confirming || maxSeats < 1}
+                            >
+                                {confirming ? (
+                                    <ActivityIndicator color="#fff" />
+                                ) : (
+                                    <Text style={styles.confirmButtonText}>Confirm booking</Text>
+                                )}
+                            </TouchableOpacity>
+                        </View>
+                    ) : null}
 
                     <View style={styles.card}>
                         <Text style={styles.sectionTitle}>Trip Details</Text>
@@ -269,7 +384,9 @@ export default function BookingScreen() {
                             </View>
                             <View style={styles.driverInfo}>
                                 <Text style={styles.driverName}>{details?.driver || 'Owner'}</Text>
-                                <Text style={styles.driverMeta}>💺 {details?.seats || '1'} seats available</Text>
+                                <Text style={styles.driverMeta}>
+                                    💺 {maxSeats} seat{maxSeats === 1 ? '' : 's'} available
+                                </Text>
                                 {details?.driverPhone ? (
                                     <Text style={styles.driverPhone}>📱 +91 {details.driverPhone}</Text>
                                 ) : null}
@@ -284,7 +401,17 @@ export default function BookingScreen() {
                         <Text style={styles.sectionTitle}>Payment Details</Text>
                         <View style={styles.paymentRow}>
                             <Text style={styles.paymentLabel}>Price per seat</Text>
-                            <Text style={styles.paymentPrice}>₹{details?.price || '0'}</Text>
+                            <Text style={styles.paymentPrice}>₹{details?.pricePerSeat || 0}</Text>
+                        </View>
+                        <View style={styles.divider} />
+                        <View style={styles.paymentRow}>
+                            <Text style={styles.paymentLabel}>Seats booked</Text>
+                            <Text style={styles.paymentPrice}>{displaySeats}</Text>
+                        </View>
+                        <View style={styles.divider} />
+                        <View style={styles.paymentRow}>
+                            <Text style={styles.paymentLabel}>Total</Text>
+                            <Text style={styles.paymentPrice}>₹{totalPrice}</Text>
                         </View>
                         <View style={styles.divider} />
                         <View style={styles.paymentRow}>
@@ -293,9 +420,13 @@ export default function BookingScreen() {
                         </View>
                     </View>
 
-                    <TouchableOpacity style={styles.cancelButton} onPress={handleCancel}>
-                        <Text style={styles.cancelButtonText}>Cancel Booking</Text>
-                    </TouchableOpacity>
+                    {bookingDone &&
+                    !bookingCancelled &&
+                    details?.paymentStatus?.toLowerCase() !== 'cancelled' ? (
+                        <TouchableOpacity style={styles.cancelButton} onPress={handleCancel}>
+                            <Text style={styles.cancelButtonText}>Cancel Booking</Text>
+                        </TouchableOpacity>
+                    ) : null}
                 </ScrollView>
             )}
         </View>
@@ -334,6 +465,23 @@ const styles = StyleSheet.create({
     successIcon: { fontSize: 32, marginBottom: 6 },
     successTitle: { fontSize: 18, fontWeight: 'bold', color: '#2e7d32' },
     successSub: { fontSize: 14, color: '#666', marginTop: 4 },
+    seatSub: { fontSize: 13, color: '#666', marginBottom: 16, marginTop: -8 },
+    seatPickerCenter: { alignItems: 'center', marginBottom: 16 },
+    totalLine: {
+        fontSize: 15,
+        fontWeight: '700',
+        color: '#1a73e8',
+        textAlign: 'center',
+        marginBottom: 16,
+    },
+    confirmButton: {
+        backgroundColor: '#1a73e8',
+        borderRadius: 12,
+        padding: 16,
+        alignItems: 'center',
+    },
+    confirmButtonDisabled: { opacity: 0.7 },
+    confirmButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
     card: {
         backgroundColor: '#fff',
         borderRadius: 16,

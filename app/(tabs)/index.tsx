@@ -2,7 +2,7 @@ import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { getFuelPrices } from '../config/api';
+import { getFuelPrices, getDisplayName } from '../config/api';
 import { getSession } from '../config/session';
 import { useUserStats } from '@/hooks/use-user-stats';
 
@@ -10,7 +10,7 @@ export default function HomeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [fuelPrices, setFuelPrices] = useState<any[]>([]);
-  const [userPhone, setUserPhone] = useState('');
+  const [userName, setUserName] = useState('');
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const { stats, loading: statsLoading } = useUserStats();
 
@@ -18,7 +18,7 @@ export default function HomeScreen() {
     const checkSession = async () => {
       const session = await getSession();
       if (session?.loggedIn) {
-        setUserPhone(session.phone);
+        setUserName(getDisplayName(session.name, session.phone));
         setIsLoggedIn(true);
       }
     };
@@ -47,7 +47,7 @@ export default function HomeScreen() {
         <View style={styles.headerRow}>
           <View style={styles.headerText}>
             <Text style={styles.greeting}>
-              {userPhone ? `Welcome back! 👋 ${userPhone}` : 'Good day! 👋'}
+              {userName ? `Welcome back! 👋 ${userName}` : 'Good day! 👋'}
             </Text>
             <Text style={styles.title}>Where are you going?</Text>
           </View>

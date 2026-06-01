@@ -1,18 +1,30 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LocationInput from './components/LocationInput';
-import { calculateSuggestedPrice, createRide, getFuelPrices } from './config/api';
+import {
+    calculateSuggestedPrice,
+    countActiveBookingsForRide,
+    createRide,
+    getAvailableSeats,
+    getFuelPrices,
+    getRideById,
+    normalizePhone,
+    updateRide,
+} from './config/api';
 import { getSession } from './config/session';
 
 export default function OfferRideScreen() {
-
     const [loading, setLoading] = useState(false);
+    const [loadingRide, setLoadingRide] = useState(false);
 
     const router = useRouter();
     const insets = useSafeAreaInsets();
+    const params = useLocalSearchParams<{ rideId?: string }>();
+    const editRideId = typeof params.rideId === 'string' ? params.rideId : params.rideId?.[0] || '';
+    const isEditMode = Boolean(editRideId);
     const [from, setFrom] = useState('');
     const [to, setTo] = useState('');
     const [time, setTime] = useState('');
@@ -61,6 +73,61 @@ export default function OfferRideScreen() {
         };
         checkVerification();
     }, []);
+
+    useEffect(() => {
+        if (!editRideId) return;
+
+        const loadRideForEdit = async () => {
+            setLoadingRide(true);
+            try {
+                const session = await getSession();
+                const ride = await getRideById(editRideId);
+                if (!ride) {
+                    Alert.alert('Not found', 'This ride could not be loaded.');
+                    router.back();
+                    return;
+                }
+
+                const ownerPhone = normalizePhone(ride.driver_name || '');
+                if (session?.phone && ownerPhone && ownerPhone !== normalizePhone(session.phone)) {
+                    Alert.alert('Not allowed', 'You can only edit your own rides.');
+                    router.back();
+                    return;
+                }
+
+                const bookings = await countActiveBookingsForRide(editRideId);
+                if (bookings > 0) {
+                    Alert.alert(
+                        'Cannot edit',
+                        'Someone has already booked this ride. Editing is only allowed before any bookings.'
+                    );
+                    router.back();
+                    return;
+                }
+
+                const departure = ride.departure_time ? new Date(ride.departure_time) : new Date();
+                if (!Number.isNaN(departure.getTime())) {
+                    setDepartureDateTime(departure);
+                    setDateLabel(formatDate(departure));
+                    setTime(formatTime(departure));
+                }
+
+                setFrom(ride.from_location || '');
+                setTo(ride.to_location || '');
+                setSeats(String(getAvailableSeats(ride) || 1));
+                setPrice(String(ride.price_per_seat || ''));
+                setSuggestedPrice(Number(ride.price_per_seat) || null);
+            } catch (error) {
+                console.error('Failed to load ride for edit:', error);
+                Alert.alert('Error', 'Could not load ride details.');
+                router.back();
+            } finally {
+                setLoadingRide(false);
+            }
+        };
+
+        loadRideForEdit();
+    }, [editRideId]);
 
     useEffect(() => {
         const loadPetrolPrice = async () => {
@@ -186,23 +253,57 @@ export default function OfferRideScreen() {
             Alert.alert('Error', 'Departure must be in the future.');
             return;
         }
+
+        const seatCount = parseInt(seats, 10);
+        const pricePerSeat = parseInt(price, 10);
+        if (!seatCount || seatCount < 1) {
+            Alert.alert('Error', 'Enter at least 1 available seat.');
+            return;
+        }
+        if (!pricePerSeat || pricePerSeat < 1) {
+            Alert.alert('Error', 'Enter a valid price per seat.');
+            return;
+        }
+
         setLoading(true);
         try {
-            await createRide({
+            const payload = {
                 from_location: from,
                 to_location: to,
                 departure_time: departureDateTime.toISOString(),
-                available_seats: parseInt(seats),
-                price_per_seat: parseInt(price),
-                driver_name: driverPhone,
-                status: 'active'
-            });
-            Alert.alert('Success 🎉', 'Your ride has been published!', [
-                { text: 'OK', onPress: () => router.replace('/') }
-            ]);
+                available_seats: seatCount,
+                price_per_seat: pricePerSeat,
+            };
+
+            if (isEditMode && editRideId) {
+                const bookings = await countActiveBookingsForRide(editRideId);
+                if (bookings > 0) {
+                    Alert.alert(
+                        'Cannot edit',
+                        'Someone booked this ride while you were editing. Changes were not saved.'
+                    );
+                    return;
+                }
+                await updateRide(editRideId, payload);
+                Alert.alert('Updated ✅', 'Your ride has been updated.', [
+                    { text: 'OK', onPress: () => router.replace('/myrides') },
+                ]);
+            } else {
+                await createRide({
+                    ...payload,
+                    driver_name: driverPhone,
+                    status: 'active',
+                });
+                Alert.alert('Success 🎉', 'Your ride has been published!', [
+                    { text: 'OK', onPress: () => router.replace('/') },
+                ]);
+            }
         } catch (error: any) {
-            const msg = error?.response?.data?.errors?.[0]?.message || 'Could not post ride. Try again.';
-            console.error('createRide error:', error?.response?.data || error);
+            const msg =
+                error?.response?.data?.errors?.[0]?.message ||
+                error?.message ||
+                'Could not save ride. Try again.';
+            console.error('save ride error:', error?.response?.data || error);
             Alert.alert('Error', msg);
         } finally {
             setLoading(false);
@@ -216,10 +317,18 @@ export default function OfferRideScreen() {
                     <Text style={styles.backText}>← Back</Text>
                 </TouchableOpacity>
                 <View style={styles.headerText}>
-                    <Text style={styles.title}>Offer a Ride</Text>
-                    <Text style={styles.sub}>Share your commute, earn money</Text>
+                    <Text style={styles.title}>{isEditMode ? 'Edit Ride' : 'Offer a Ride'}</Text>
+                    <Text style={styles.sub}>
+                        {isEditMode
+                            ? 'Update details before anyone books'
+                            : 'Share your commute, earn money'}
+                    </Text>
                 </View>
             </View>
+
+            {loadingRide ? (
+                <ActivityIndicator size="large" color="#1a73e8" style={styles.pageLoader} />
+            ) : null}
 
             <KeyboardAvoidingView
                 behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -232,6 +341,7 @@ export default function OfferRideScreen() {
                             <LocationInput
                                 variant="pickup"
                                 placeholder="e.g. Wakad, Pune"
+                                initialValue={from}
                                 onLocationSelect={(address) => setFrom(address)}
                             />
                         </View>
@@ -239,6 +349,7 @@ export default function OfferRideScreen() {
                             <LocationInput
                                 variant="dropoff"
                                 placeholder="e.g. Hinjewadi Phase 1"
+                                initialValue={to}
                                 onLocationSelect={(address) => setTo(address)}
                             />
                         </View>
@@ -335,13 +446,16 @@ export default function OfferRideScreen() {
                     </View>
 
                     <TouchableOpacity
-                        style={[styles.publishButton, loading && styles.buttonDisabled]}
+                        style={[styles.publishButton, (loading || loadingRide) && styles.buttonDisabled]}
                         onPress={handlePublish}
-                        disabled={loading}>
+                        disabled={loading || loadingRide}>
                         {loading
                             ? <ActivityIndicator color="#fff" />
-                            : <Text style={styles.publishButtonText}>Publish Ride 🚗</Text>
-                        }
+                            : (
+                                <Text style={styles.publishButtonText}>
+                                    {isEditMode ? 'Save changes ✅' : 'Publish Ride 🚗'}
+                                </Text>
+                            )}
                     </TouchableOpacity>
                 </View>
                 </ScrollView>
@@ -425,6 +539,7 @@ export default function OfferRideScreen() {
 const styles = StyleSheet.create({
     buttonDisabled: { backgroundColor: '#93b8f5' },
     container: { flex: 1, backgroundColor: '#f5f5f5' },
+    pageLoader: { marginVertical: 24 },
     flex: { flex: 1 },
     scroll: { flex: 1 },
     scrollContent: { paddingHorizontal: 20, paddingBottom: 40 },
