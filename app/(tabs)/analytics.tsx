@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getUserBookings, getUserOfferedRides } from '@/app/config/api';
@@ -8,18 +8,20 @@ import { useUserStats } from '@/hooks/use-user-stats';
 
 export default function AnalyticsScreen() {
     const insets = useSafeAreaInsets();
-    const { stats, loading } = useUserStats();
+    const { stats, loading, error: statsError, refresh } = useUserStats();
     const [bookings, setBookings] = useState<any[]>([]);
     const [offeredRides, setOfferedRides] = useState<any[]>([]);
     const [activityLoading, setActivityLoading] = useState(true);
+    const [activityError, setActivityError] = useState<string | null>(null);
 
     useFocusEffect(
         useCallback(() => {
             const loadActivity = async () => {
                 setActivityLoading(true);
+                setActivityError(null);
                 try {
                     const session = await getSession();
-                    if (session?.loggedIn && session.phone) {
+                    if (session?.phone) {
                         const [userBookings, userRides] = await Promise.all([
                             getUserBookings(session.phone),
                             getUserOfferedRides(session.phone),
@@ -30,10 +32,11 @@ export default function AnalyticsScreen() {
                         setBookings([]);
                         setOfferedRides([]);
                     }
-                } catch (error) {
-                    console.error('Failed to load analytics activity:', error);
+                } catch (err) {
+                    console.error('Failed to load analytics activity:', err);
                     setBookings([]);
                     setOfferedRides([]);
+                    setActivityError('Could not load ride history. Tap retry below.');
                 } finally {
                     setActivityLoading(false);
                 }
@@ -41,6 +44,32 @@ export default function AnalyticsScreen() {
             loadActivity();
         }, [])
     );
+
+    const loadError = statsError || activityError;
+
+    const handleRetry = () => {
+        refresh();
+        setActivityLoading(true);
+        setActivityError(null);
+        getSession().then(async (session) => {
+            if (!session?.phone) {
+                setActivityLoading(false);
+                return;
+            }
+            try {
+                const [userBookings, userRides] = await Promise.all([
+                    getUserBookings(session.phone),
+                    getUserOfferedRides(session.phone),
+                ]);
+                setBookings(userBookings);
+                setOfferedRides(userRides);
+            } catch {
+                setActivityError('Could not load ride history. Tap retry below.');
+            } finally {
+                setActivityLoading(false);
+            }
+        });
+    };
 
     return (
         <View style={styles.container}>
@@ -54,6 +83,15 @@ export default function AnalyticsScreen() {
                 contentContainerStyle={styles.scrollContent}
                 showsVerticalScrollIndicator={false}
             >
+                {loadError ? (
+                    <View style={styles.errorCard}>
+                        <Text style={styles.errorText}>{loadError}</Text>
+                        <TouchableOpacity style={styles.retryButton} onPress={handleRetry}>
+                            <Text style={styles.retryText}>Retry</Text>
+                        </TouchableOpacity>
+                    </View>
+                ) : null}
+
                 {loading ? (
                     <ActivityIndicator size="large" color="#1a73e8" style={styles.loader} />
                 ) : (
@@ -148,6 +186,22 @@ const styles = StyleSheet.create({
         marginBottom: 20,
     },
     emptyText: { color: '#666', fontSize: 14, textAlign: 'center' },
+    errorCard: {
+        backgroundColor: '#fdecea',
+        borderRadius: 12,
+        padding: 16,
+        marginBottom: 16,
+        borderWidth: 1,
+        borderColor: '#f5c6c2',
+    },
+    errorText: { color: '#c62828', fontSize: 14, textAlign: 'center', marginBottom: 12 },
+    retryButton: {
+        backgroundColor: '#1a73e8',
+        borderRadius: 8,
+        paddingVertical: 10,
+        alignItems: 'center',
+    },
+    retryText: { color: '#fff', fontWeight: '600', fontSize: 14 },
     card: {
         backgroundColor: '#fff',
         borderRadius: 12,

@@ -1,10 +1,21 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Alert, Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import RideMap from './components/RideMap';
-import { createBooking } from './config/api';
+import { createBooking, getBookingById, getRideById, normalizePhone, resolveDisplayName, resolveRelationId } from './config/api';
 import { getSession } from './config/session';
+
+type BookingDetails = {
+    from: string;
+    to: string;
+    time: string;
+    price: string;
+    driver: string;
+    driverPhone: string;
+    seats: string;
+    paymentStatus: string;
+};
 
 const formatRideTime = (value?: string) => {
     if (!value) return 'Time TBD';
@@ -18,30 +29,119 @@ const formatRideTime = (value?: string) => {
     });
 };
 
+const paramAsString = (value: string | string[] | undefined) => {
+    if (Array.isArray(value)) return value[0] || '';
+    return value || '';
+};
+
+const buildDetailsFromRide = async (ride: any, priceOverride?: string, paymentStatus = 'pending') => {
+    const driverRaw = ride?.driver_name || '';
+    const driverName = await resolveDisplayName(driverRaw, 'Owner');
+    return {
+        from: ride?.from_location || 'Pickup',
+        to: ride?.to_location || 'Destination',
+        time: ride?.departure_time || '',
+        price: priceOverride || String(ride?.price_per_seat || ''),
+        driver: driverName,
+        driverPhone: normalizePhone(driverRaw) || driverRaw,
+        seats: String(ride?.available_seats || 1),
+        paymentStatus,
+    };
+};
+
 export default function BookingScreen() {
     const router = useRouter();
     const insets = useSafeAreaInsets();
-    const { from, to, time, price, driver, driverPhone, seats, rideId, viewOnly } = useLocalSearchParams<{
-        from: string;
-        to: string;
-        time: string;
-        price: string;
-        driver: string;
-        driverPhone: string;
-        seats: string;
-        rideId: string;
+    const params = useLocalSearchParams<{
+        from?: string;
+        to?: string;
+        time?: string;
+        price?: string;
+        driver?: string;
+        driverPhone?: string;
+        seats?: string;
+        rideId?: string;
+        bookingId?: string;
         viewOnly?: string;
     }>();
 
-    const [bookingDone, setBookingDone] = useState(viewOnly === 'true');
-    const phone = driverPhone || driver;
-    const displayTime = time ? formatRideTime(time) : 'Time TBD';
+    const viewOnly = paramAsString(params.viewOnly) === 'true';
+    const bookingId = paramAsString(params.bookingId);
+    const rideId = paramAsString(params.rideId);
+
+    const [details, setDetails] = useState<BookingDetails | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [bookingDone, setBookingDone] = useState(viewOnly);
 
     useEffect(() => {
-        if (viewOnly === 'true') return;
+        let cancelled = false;
+
+        const loadDetails = async () => {
+            setLoading(true);
+            try {
+                if (bookingId) {
+                    const booking = await getBookingById(bookingId);
+                    const rideRef = booking?.ride_id;
+                    const ride =
+                        typeof rideRef === 'object' && rideRef !== null
+                            ? rideRef
+                            : await getRideById(resolveRelationId(rideRef) || '');
+                    const nextDetails = await buildDetailsFromRide(
+                        ride,
+                        String(ride?.price_per_seat || booking?.total_price || ''),
+                        booking?.payment_status || 'pending'
+                    );
+                    if (!cancelled) setDetails(nextDetails);
+                    return;
+                }
+
+                if (rideId) {
+                    const ride = await getRideById(rideId);
+                    const nextDetails = await buildDetailsFromRide(
+                        ride,
+                        paramAsString(params.price) || undefined
+                    );
+                    if (!cancelled) setDetails(nextDetails);
+                    return;
+                }
+
+                const driverRaw = paramAsString(params.driverPhone) || paramAsString(params.driver);
+                const driverName = driverRaw
+                    ? await resolveDisplayName(driverRaw, paramAsString(params.driver) || 'Owner')
+                    : paramAsString(params.driver) || 'Owner';
+
+                if (!cancelled) {
+                    setDetails({
+                        from: paramAsString(params.from) || 'Pickup',
+                        to: paramAsString(params.to) || 'Destination',
+                        time: paramAsString(params.time),
+                        price: paramAsString(params.price),
+                        driver: driverName,
+                        driverPhone: normalizePhone(driverRaw) || driverRaw,
+                        seats: paramAsString(params.seats) || '1',
+                        paymentStatus: 'pending',
+                    });
+                }
+            } catch (error) {
+                console.error('Failed to load booking details:', error);
+                if (!cancelled) {
+                    Alert.alert('Error', 'Could not load booking details.');
+                }
+            } finally {
+                if (!cancelled) setLoading(false);
+            }
+        };
+
+        loadDetails();
+        return () => {
+            cancelled = true;
+        };
+    }, [bookingId, rideId]);
+
+    useEffect(() => {
+        if (viewOnly || !rideId || bookingDone) return;
 
         const saveBooking = async () => {
-            if (bookingDone) return;
             try {
                 const session = await getSession();
                 await createBooking({
@@ -49,7 +149,7 @@ export default function BookingScreen() {
                     rider_name: session?.name || session?.phone,
                     rider_phone: session?.phone,
                     seats_booked: 1,
-                    total_price: parseInt(price as string),
+                    total_price: parseInt(paramAsString(params.price), 10),
                     payment_status: 'pending',
                 });
                 setBookingDone(true);
@@ -58,7 +158,7 @@ export default function BookingScreen() {
             }
         };
         saveBooking();
-    }, []);
+    }, [viewOnly, rideId, bookingDone]);
 
     const handleCancel = () => {
         Alert.alert(
@@ -80,13 +180,22 @@ export default function BookingScreen() {
     };
 
     const handleCall = () => {
-        const digits = (phone || '').replace(/\D/g, '').slice(-10);
+        const phone = details?.driverPhone || '';
+        const digits = phone.replace(/\D/g, '').slice(-10);
         if (digits.length === 10) {
             Linking.openURL(`tel:${digits}`);
         } else {
-            Alert.alert('Unavailable', 'Driver phone not available.');
+            Alert.alert('Unavailable', 'Ride owner phone not available.');
         }
     };
+
+    const displayTime = details?.time ? formatRideTime(details.time) : 'Time TBD';
+    const paymentStatusLabel =
+        details?.paymentStatus === 'paid'
+            ? 'Paid'
+            : details?.paymentStatus === 'pending'
+              ? 'Pending'
+              : details?.paymentStatus || 'Pending';
 
     return (
         <View style={styles.container}>
@@ -100,91 +209,95 @@ export default function BookingScreen() {
                 </View>
             </View>
 
-            <ScrollView
-                style={styles.scroll}
-                contentContainerStyle={styles.scrollContent}
-                keyboardShouldPersistTaps="handled"
-                showsVerticalScrollIndicator={false}
-            >
-                <View style={styles.mapCard}>
-                    <RideMap
-                        fromLocation={from as string}
-                        toLocation={to as string}
-                        height={180}
-                    />
-                </View>
+            {loading ? (
+                <ActivityIndicator size="large" color="#1a73e8" style={styles.loader} />
+            ) : (
+                <ScrollView
+                    style={styles.scroll}
+                    contentContainerStyle={styles.scrollContent}
+                    keyboardShouldPersistTaps="handled"
+                    showsVerticalScrollIndicator={false}
+                >
+                    <View style={styles.mapCard}>
+                        <RideMap
+                            fromLocation={details?.from || ''}
+                            toLocation={details?.to || ''}
+                            height={180}
+                        />
+                    </View>
 
-                <View style={styles.successBanner}>
-                    <Text style={styles.successIcon}>✅</Text>
-                    <Text style={styles.successTitle}>Ride Booked!</Text>
-                    <Text style={styles.successSub}>Your seat is confirmed</Text>
-                </View>
+                    <View style={styles.successBanner}>
+                        <Text style={styles.successIcon}>✅</Text>
+                        <Text style={styles.successTitle}>Ride Booked!</Text>
+                        <Text style={styles.successSub}>Your seat is confirmed</Text>
+                    </View>
 
-                <View style={styles.card}>
-                    <Text style={styles.sectionTitle}>Trip Details</Text>
-                    <View style={styles.row}>
-                        <View style={styles.dotGreen} />
-                        <View style={styles.rowContent}>
-                            <Text style={styles.rowLabel}>Pickup</Text>
-                            <Text style={styles.rowValue}>{from}</Text>
+                    <View style={styles.card}>
+                        <Text style={styles.sectionTitle}>Trip Details</Text>
+                        <View style={styles.row}>
+                            <View style={styles.dotGreen} />
+                            <View style={styles.rowContent}>
+                                <Text style={styles.rowLabel}>Pickup</Text>
+                                <Text style={styles.rowValue}>{details?.from || '—'}</Text>
+                            </View>
+                        </View>
+                        <View style={styles.divider} />
+                        <View style={styles.row}>
+                            <View style={styles.dotRed} />
+                            <View style={styles.rowContent}>
+                                <Text style={styles.rowLabel}>Drop</Text>
+                                <Text style={styles.rowValue}>{details?.to || '—'}</Text>
+                            </View>
+                        </View>
+                        <View style={styles.divider} />
+                        <View style={styles.row}>
+                            <Text style={styles.rowEmoji}>🕐</Text>
+                            <View style={styles.rowContent}>
+                                <Text style={styles.rowLabel}>Departure</Text>
+                                <Text style={styles.rowValue}>{displayTime}</Text>
+                            </View>
                         </View>
                     </View>
-                    <View style={styles.divider} />
-                    <View style={styles.row}>
-                        <View style={styles.dotRed} />
-                        <View style={styles.rowContent}>
-                            <Text style={styles.rowLabel}>Drop</Text>
-                            <Text style={styles.rowValue}>{to}</Text>
-                        </View>
-                    </View>
-                    <View style={styles.divider} />
-                    <View style={styles.row}>
-                        <Text style={styles.rowEmoji}>🕐</Text>
-                        <View style={styles.rowContent}>
-                            <Text style={styles.rowLabel}>Departure</Text>
-                            <Text style={styles.rowValue}>{displayTime}</Text>
-                        </View>
-                    </View>
-                </View>
 
-                <View style={styles.card}>
-                    <Text style={styles.sectionTitle}>Driver Details</Text>
-                    <View style={styles.driverRow}>
-                        <View style={styles.avatar}>
-                            <Text style={styles.avatarText}>
-                                {driver ? driver[0].toUpperCase() : 'D'}
-                            </Text>
+                    <View style={styles.card}>
+                        <Text style={styles.sectionTitle}>Ride Owner</Text>
+                        <View style={styles.driverRow}>
+                            <View style={styles.avatar}>
+                                <Text style={styles.avatarText}>
+                                    {details?.driver ? details.driver[0].toUpperCase() : 'O'}
+                                </Text>
+                            </View>
+                            <View style={styles.driverInfo}>
+                                <Text style={styles.driverName}>{details?.driver || 'Owner'}</Text>
+                                <Text style={styles.driverMeta}>💺 {details?.seats || '1'} seats available</Text>
+                                {details?.driverPhone ? (
+                                    <Text style={styles.driverPhone}>📱 +91 {details.driverPhone}</Text>
+                                ) : null}
+                            </View>
                         </View>
-                        <View style={styles.driverInfo}>
-                            <Text style={styles.driverName}>{driver || 'Driver'}</Text>
-                            <Text style={styles.driverMeta}>💺 {seats || '1'} seats available</Text>
-                            {phone ? (
-                                <Text style={styles.driverPhone}>📱 +91 {phone}</Text>
-                            ) : null}
+                        <TouchableOpacity style={styles.callButton} onPress={handleCall}>
+                            <Text style={styles.callText}>📞 Call Owner</Text>
+                        </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.card}>
+                        <Text style={styles.sectionTitle}>Payment Details</Text>
+                        <View style={styles.paymentRow}>
+                            <Text style={styles.paymentLabel}>Price per seat</Text>
+                            <Text style={styles.paymentPrice}>₹{details?.price || '0'}</Text>
+                        </View>
+                        <View style={styles.divider} />
+                        <View style={styles.paymentRow}>
+                            <Text style={styles.paymentLabel}>Payment Status</Text>
+                            <Text style={styles.paymentStatus}>{paymentStatusLabel}</Text>
                         </View>
                     </View>
-                    <TouchableOpacity style={styles.callButton} onPress={handleCall}>
-                        <Text style={styles.callText}>📞 Call Driver</Text>
+
+                    <TouchableOpacity style={styles.cancelButton} onPress={handleCancel}>
+                        <Text style={styles.cancelButtonText}>Cancel Booking</Text>
                     </TouchableOpacity>
-                </View>
-
-                <View style={styles.card}>
-                    <Text style={styles.sectionTitle}>Payment Details</Text>
-                    <View style={styles.paymentRow}>
-                        <Text style={styles.paymentLabel}>Price per seat</Text>
-                        <Text style={styles.paymentPrice}>₹{price}</Text>
-                    </View>
-                    <View style={styles.divider} />
-                    <View style={styles.paymentRow}>
-                        <Text style={styles.paymentLabel}>Payment Status</Text>
-                        <Text style={styles.paymentStatus}>Pending</Text>
-                    </View>
-                </View>
-
-                <TouchableOpacity style={styles.cancelButton} onPress={handleCancel}>
-                    <Text style={styles.cancelButtonText}>Cancel Booking</Text>
-                </TouchableOpacity>
-            </ScrollView>
+                </ScrollView>
+            )}
         </View>
     );
 }
@@ -193,6 +306,7 @@ const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#f5f5f5' },
     scroll: { flex: 1 },
     scrollContent: { padding: 20, paddingBottom: 32 },
+    loader: { marginTop: 40 },
     header: {
         backgroundColor: '#1a73e8',
         paddingHorizontal: 24,

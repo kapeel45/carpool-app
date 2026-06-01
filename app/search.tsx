@@ -4,8 +4,21 @@ import { ActivityIndicator, Alert, Linking, ScrollView, StyleSheet, Text, Toucha
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LocationInput from './components/LocationInput';
 import RideMap from './components/RideMap';
-import { getRides, createBooking } from './config/api';
+import { getRides, createBooking, resolveOwnerInfo, filterRidesForFind, FIND_RIDE_REFRESH_MS } from './config/api';
+import { getGenderDisplay } from './config/gender';
 import { getSession } from './config/session';
+
+const formatRideTime = (value?: string) => {
+    if (!value) return 'Time TBD';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString('en-IN', {
+        weekday: 'short',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+    });
+};
 
 export default function SearchScreen() {
     const router = useRouter();
@@ -18,6 +31,9 @@ export default function SearchScreen() {
     const [userPhone, setUserPhone] = useState('');
     const [bookedIds, setBookedIds] = useState<Set<string>>(new Set());
     const [bookingRideId, setBookingRideId] = useState<string | null>(null);
+    const [driverProfiles, setDriverProfiles] = useState<
+        Record<string, { name: string; gender?: string }>
+    >({});
 
     useEffect(() => {
         const checkSession = async () => {
@@ -30,20 +46,41 @@ export default function SearchScreen() {
     }, []);
 
     useEffect(() => {
-        const loadAllRides = async () => {
-            setLoading(true);
-            try {
-                const data = await getRides();
-                setRides(data);
-                setSearched(true);
-            } catch (error) {
-                console.error('Error loading rides:', error);
-            } finally {
-                setLoading(false);
+        if (!userPhone) return;
+        const interval = setInterval(() => {
+            setRides((prev) => filterRidesForFind(prev, userPhone));
+        }, FIND_RIDE_REFRESH_MS);
+        return () => clearInterval(interval);
+    }, [userPhone]);
+
+    useEffect(() => {
+        if (rides.length === 0) {
+            setDriverProfiles({});
+            return;
+        }
+
+        let cancelled = false;
+        const loadDriverProfiles = async () => {
+            const cache = new Map<string, { name: string; gender?: string }>();
+            const entries: Record<string, { name: string; gender?: string }> = {};
+
+            for (const ride of rides) {
+                const raw = ride.driver_name || ride.driver_phone || '';
+                const key = ride.id.toString();
+                if (!cache.has(raw)) {
+                    cache.set(raw, await resolveOwnerInfo(raw));
+                }
+                entries[key] = cache.get(raw)!;
             }
+
+            if (!cancelled) setDriverProfiles(entries);
         };
-        loadAllRides();
-    }, []);
+
+        loadDriverProfiles();
+        return () => {
+            cancelled = true;
+        };
+    }, [rides]);
 
     const handleSearch = async () => {
         if (!from || !to) {
@@ -53,13 +90,16 @@ export default function SearchScreen() {
         setLoading(true);
         try {
             const data = await getRides();
-            const filtered = data.filter((ride: any) => {
-                const rideFrom = ride.from_location?.toLowerCase() || '';
-                const rideTo = ride.to_location?.toLowerCase() || '';
-                const searchFrom = from.toLowerCase().trim();
-                const searchTo = to.toLowerCase().trim();
-                return rideFrom.includes(searchFrom) && rideTo.includes(searchTo);
-            });
+            const filtered = filterRidesForFind(
+                data.filter((ride: any) => {
+                    const rideFrom = ride.from_location?.toLowerCase() || '';
+                    const rideTo = ride.to_location?.toLowerCase() || '';
+                    const searchFrom = from.toLowerCase().trim();
+                    const searchTo = to.toLowerCase().trim();
+                    return rideFrom.includes(searchFrom) && rideTo.includes(searchTo);
+                }),
+                userPhone
+            );
             setRides(filtered);
             setSearched(true);
         } catch (error) {
@@ -108,7 +148,7 @@ export default function SearchScreen() {
         if (phone) {
             Linking.openURL(`tel:${phone}`);
         } else {
-            Alert.alert('Unavailable', 'Driver phone number not available.');
+            Alert.alert('Unavailable', 'Ride owner phone number not available.');
         }
     };
 
@@ -145,37 +185,36 @@ export default function SearchScreen() {
                 </View>
             </View>
 
+            <View style={styles.searchContainer}>
+                <View style={styles.routeCard}>
+                    <View style={styles.routeLine} pointerEvents="none" />
+                    <View style={[styles.fieldWrap, styles.fieldWrapTop]}>
+                        <LocationInput
+                            variant="pickup"
+                            placeholder="From where?"
+                            onLocationSelect={(address) => setFrom(address)}
+                        />
+                    </View>
+                    <View style={styles.fieldWrap}>
+                        <LocationInput
+                            variant="dropoff"
+                            placeholder="Going to?"
+                            onLocationSelect={(address) => setTo(address)}
+                        />
+                    </View>
+                </View>
+
+                <TouchableOpacity style={styles.searchButton} onPress={handleSearch}>
+                    <Text style={styles.searchText}>Search Rides 🔍</Text>
+                </TouchableOpacity>
+            </View>
+
             <ScrollView
                 style={styles.scroll}
                 contentContainerStyle={styles.scrollContent}
                 keyboardShouldPersistTaps="handled"
-                nestedScrollEnabled
                 showsVerticalScrollIndicator={false}
             >
-                <View style={styles.searchContainer}>
-                    <View style={styles.routeCard}>
-                        <View style={styles.routeLine} pointerEvents="none" />
-                        <View style={[styles.fieldWrap, styles.fieldWrapTop]}>
-                            <LocationInput
-                                variant="pickup"
-                                placeholder="From where?"
-                                onLocationSelect={(address) => setFrom(address)}
-                            />
-                        </View>
-                        <View style={styles.fieldWrap}>
-                            <LocationInput
-                                variant="dropoff"
-                                placeholder="Going to?"
-                                onLocationSelect={(address) => setTo(address)}
-                            />
-                        </View>
-                    </View>
-
-                    <TouchableOpacity style={styles.searchButton} onPress={handleSearch}>
-                        <Text style={styles.searchText}>Search Rides 🔍</Text>
-                    </TouchableOpacity>
-                </View>
-
                 {loading && (
                     <ActivityIndicator size="large" color="#1a73e8" style={styles.loader} />
                 )}
@@ -191,15 +230,28 @@ export default function SearchScreen() {
                     const rideId = item.id.toString();
                     const isBooked = bookedIds.has(rideId);
                     const isBooking = bookingRideId === rideId;
+                    const driver = driverProfiles[rideId];
+                    const driverName = driver?.name || item.driver_name || 'Owner';
+                    const genderDisplay = getGenderDisplay(driver?.gender);
 
                     return (
                         <View key={rideId} style={styles.rideCard}>
                             <View style={styles.rideTop}>
-                                <Text style={styles.driverName}>🧑 {item.driver_name}</Text>
+                                <View style={styles.driverBlock}>
+                                    <Text style={styles.driverName}>🧑 {driverName}</Text>
+                                    {genderDisplay ? (
+                                        <Text style={styles.genderMeta}>
+                                            {genderDisplay.icon} {genderDisplay.label}
+                                        </Text>
+                                    ) : null}
+                                </View>
                                 <Text style={styles.price}>₹{item.price_per_seat}</Text>
                             </View>
                             <View style={styles.rideMiddle}>
-                                <Text style={styles.route}>{item.from_location} → {item.to_location}</Text>
+                                <View style={styles.routeBlock}>
+                                    <Text style={styles.route}>{item.from_location} → {item.to_location}</Text>
+                                    <Text style={styles.meta}>🕐 {formatRideTime(item.departure_time)}</Text>
+                                </View>
                             </View>
                             <View style={styles.rideBottom}>
                                 <Text style={styles.meta}>💺 {item.available_seats} seats left</Text>
@@ -246,6 +298,16 @@ export default function SearchScreen() {
                     <View style={styles.empty}>
                         <Text style={styles.emptyIcon}>🚗</Text>
                         <Text style={styles.emptyText}>Enter your route to find rides</Text>
+                        {userPhone ? (
+                            <TouchableOpacity
+                                style={styles.myRidesLink}
+                                onPress={() => router.push('/myrides')}
+                            >
+                                <Text style={styles.myRidesLinkText}>
+                                    View your offered rides in My Rides →
+                                </Text>
+                            </TouchableOpacity>
+                        ) : null}
                     </View>
                 )}
             </ScrollView>
@@ -256,7 +318,7 @@ export default function SearchScreen() {
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#f5f5f5' },
     scroll: { flex: 1 },
-    scrollContent: { padding: 20, paddingBottom: 24 },
+    scrollContent: { paddingHorizontal: 20, paddingBottom: 24 },
     header: {
         backgroundColor: '#1a73e8',
         paddingHorizontal: 24,
@@ -271,7 +333,8 @@ const styles = StyleSheet.create({
         backgroundColor: '#fff',
         borderRadius: 16,
         padding: 16,
-        marginBottom: 16,
+        marginHorizontal: 20,
+        marginBottom: 12,
         elevation: 2,
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 2 },
@@ -316,11 +379,14 @@ const styles = StyleSheet.create({
     searchText: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
     loader: { marginVertical: 40 },
     rideCard: { backgroundColor: '#fff', borderRadius: 16, padding: 16, marginBottom: 12, elevation: 2 },
-    rideTop: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
+    rideTop: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8, alignItems: 'flex-start' },
+    driverBlock: { flex: 1, paddingRight: 8 },
     driverName: { fontSize: 16, fontWeight: 'bold', color: '#333' },
+    genderMeta: { fontSize: 13, color: '#666', marginTop: 4 },
     price: { fontSize: 18, fontWeight: 'bold', color: '#1a73e8' },
-    rideMiddle: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 21 },
-    route: { fontSize: 14, color: '#555', flex: 1, flexWrap: 'wrap' },
+    rideMiddle: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 },
+    routeBlock: { flex: 1, gap: 4 },
+    route: { fontSize: 14, color: '#555', flexWrap: 'wrap' },
     rideBottom: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
     meta: { fontSize: 13, color: '#666' },
     bookButton: { backgroundColor: '#1a73e8', paddingHorizontal: 20, paddingVertical: 8, borderRadius: 8, minWidth: 96, alignItems: 'center' },
@@ -333,5 +399,7 @@ const styles = StyleSheet.create({
     bookText: { color: '#fff', fontWeight: 'bold', fontSize: 14 },
     empty: { alignItems: 'center', paddingVertical: 40 },
     emptyIcon: { fontSize: 64, marginBottom: 16 },
-    emptyText: { fontSize: 16, color: '#999' },
+    emptyText: { fontSize: 16, color: '#999', textAlign: 'center' },
+    myRidesLink: { marginTop: 16, paddingVertical: 10, paddingHorizontal: 16 },
+    myRidesLinkText: { color: '#1a73e8', fontSize: 14, fontWeight: '600' },
 });

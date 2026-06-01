@@ -29,26 +29,19 @@ export default function LoginScreen() {
         if (phone.length !== 10) return;
         setLoading(true);
         try {
-            console.log('Checking phone:', phone); // ADD THIS
             const user = await findUserByPhone(phone);
-            console.log('Found user:', user); // ADD THIS
             if (user) {
                 setExistingUser(user);
-                if (user.mpin) {
-                    setStep('enter_mpin');
-                } else {
-                    setStep('set_mpin');
-                }
-            } else {
-                console.log('Creating new user with phone:', phone); // ADD THIS
-                const newUser = await createUser(phone);
-                console.log('Created user:', newUser); // ADD THIS
-                setExistingUser(newUser);
-                setStep('set_mpin');
+                setStep(user.mpin ? 'enter_mpin' : 'set_mpin');
+                return;
             }
+
+            const newUser = await createUser(phone);
+            setExistingUser(newUser);
+            setStep('set_mpin');
         } catch (error) {
-            console.log('Error:', error); // ADD THIS
-            Alert.alert('Error', 'Could not connect. Check your internet.');
+            console.error('Login error:', error);
+            Alert.alert('Error', 'Could not connect. Check your internet and try again.');
         } finally {
             setLoading(false);
         }
@@ -73,6 +66,9 @@ export default function LoginScreen() {
                 userId: existingUser.id,
                 phone: existingUser.phone,
                 name: existingUser.name,
+                gender: existingUser.gender,
+                email: existingUser.email,
+                emailVerified: existingUser.email_verified,
             });
             router.replace('/search');
         } catch (error) {
@@ -92,6 +88,9 @@ export default function LoginScreen() {
                     userId: existingUser.id,
                     phone: existingUser.phone,
                     name: existingUser.name,
+                    gender: existingUser.gender,
+                    email: existingUser.email,
+                    emailVerified: existingUser.email_verified,
                 });
                 router.replace('/search');
             } else {
@@ -148,7 +147,7 @@ export default function LoginScreen() {
                 {step === 'set_mpin' && (
                     <>
                         <Text style={styles.stepTitle}>Set your 4-digit MPIN</Text>
-                        <Text style={styles.stepSub}>You'll use this to login every time</Text>
+                        <Text style={styles.stepSub}>New number — create an MPIN to continue</Text>
 
                         <Text style={styles.label}>Create MPIN</Text>
                         <TextInput

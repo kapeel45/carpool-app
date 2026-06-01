@@ -1,14 +1,38 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, Alert, SafeAreaView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { verifyEmailOTP } from './config/api';
+import { sendEmailOTP, verifyEmailOTP } from './config/api';
 import { getSession, saveSession } from './config/session';
 
 export default function VerifyEmailScreen() {
     const router = useRouter();
-    const { email } = useLocalSearchParams<{ email: string }>();
+    const { email: emailParam } = useLocalSearchParams<{ email: string }>();
+    const email = Array.isArray(emailParam) ? emailParam[0] : emailParam || '';
     const [otp, setOtp] = useState('');
     const [loading, setLoading] = useState(false);
+    const [resending, setResending] = useState(false);
+
+    const handleResend = async () => {
+        if (!email) return;
+        setResending(true);
+        try {
+            const session = await getSession();
+            if (!session?.userId) {
+                Alert.alert('Error', 'Please log in again.');
+                return;
+            }
+            const result = await sendEmailOTP(email, session.userId);
+            if (result.devOtp) {
+                Alert.alert('OTP Generated', `Use this OTP:\n\n${result.devOtp}`);
+            } else {
+                Alert.alert('Sent', 'A new OTP has been sent to your email.');
+            }
+        } catch (error: any) {
+            Alert.alert('Error', error?.message || 'Could not resend OTP.');
+        } finally {
+            setResending(false);
+        }
+    };
 
     const handleVerify = async () => {
         if (otp.length !== 6) return;
@@ -17,7 +41,7 @@ export default function VerifyEmailScreen() {
             const session = await getSession();
             const result = await verifyEmailOTP(email, otp, session.userId);
             if (result.success) {
-                await saveSession({ ...session, emailVerified: true });
+                await saveSession({ ...session, email, emailVerified: true });
                 Alert.alert(
                     '✅ Email Verified!',
                     'Your email has been verified. You can now offer rides!',
@@ -74,6 +98,17 @@ export default function VerifyEmailScreen() {
                 </TouchableOpacity>
 
                 <Text style={styles.note}>OTP expires in 10 minutes</Text>
+
+                <TouchableOpacity
+                    style={styles.resendButton}
+                    onPress={handleResend}
+                    disabled={resending}
+                >
+                    {resending
+                        ? <ActivityIndicator color="#1a73e8" />
+                        : <Text style={styles.resendText}>Resend OTP</Text>
+                    }
+                </TouchableOpacity>
             </View>
         </SafeAreaView>
     );
@@ -95,4 +130,6 @@ const styles = StyleSheet.create({
     buttonDisabled: { backgroundColor: '#93b8f5' },
     buttonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
     note: { fontSize: 13, color: '#999', marginTop: 16 },
+    resendButton: { marginTop: 20, padding: 12 },
+    resendText: { color: '#1a73e8', fontSize: 15, fontWeight: '600' },
 });

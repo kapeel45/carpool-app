@@ -16,10 +16,22 @@ export default function OfferRideScreen() {
     const [from, setFrom] = useState('');
     const [to, setTo] = useState('');
     const [time, setTime] = useState('');
+    const [dateLabel, setDateLabel] = useState('');
     const [seats, setSeats] = useState('2');
     const [price, setPrice] = useState('');
+    const [showDatePicker, setShowDatePicker] = useState(false);
     const [showTimePicker, setShowTimePicker] = useState(false);
-    const [selectedTime, setSelectedTime] = useState(new Date());
+    const [departureDateTime, setDepartureDateTime] = useState(() => {
+        const d = new Date();
+        d.setSeconds(0, 0);
+        d.setMinutes(Math.ceil(d.getMinutes() / 15) * 15);
+        if (d.getMinutes() === 60) {
+            d.setMinutes(0);
+            d.setHours(d.getHours() + 1);
+        }
+        return d;
+    });
+    const [pickerValue, setPickerValue] = useState(new Date());
     const [suggestedPrice, setSuggestedPrice] = useState<number | null>(null);
     const [calculating, setCalculating] = useState(false);
     const [petrolPrice, setPetrolPrice] = useState(104.89);
@@ -28,9 +40,7 @@ export default function OfferRideScreen() {
     useEffect(() => {
         const loadUser = async () => {
             const session = await getSession();
-            if (session) {
-                setDriverPhone(session.phone);
-            }
+            if (session) setDriverPhone(session.phone);
         };
         loadUser();
     }, []);
@@ -50,14 +60,6 @@ export default function OfferRideScreen() {
             }
         };
         checkVerification();
-    }, []);
-
-    useEffect(() => {
-        const loadUser = async () => {
-            const session = await getSession();
-            if (session) setDriverPhone(session.phone);
-        };
-        loadUser();
     }, []);
 
     useEffect(() => {
@@ -93,6 +95,14 @@ export default function OfferRideScreen() {
         autoCalculate();
     }, [from, to, petrolPrice]);
 
+    const formatDate = (date: Date) =>
+        date.toLocaleDateString('en-IN', {
+            weekday: 'short',
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+        });
+
     const formatTime = (date: Date) => {
         const hours = date.getHours();
         const minutes = date.getMinutes();
@@ -102,16 +112,51 @@ export default function OfferRideScreen() {
         return `${formattedHours}:${formattedMinutes} ${ampm}`;
     };
 
-    const applySelectedTime = (date: Date) => {
-        const now = new Date();
-        const picked = new Date(date);
-        picked.setFullYear(now.getFullYear(), now.getMonth(), now.getDate());
-        if (picked < now) {
-            Alert.alert('Invalid Time', 'Please select a future time.');
+    const openDatePicker = () => {
+        setPickerValue(departureDateTime);
+        setShowDatePicker(true);
+    };
+
+    const openTimePicker = () => {
+        setPickerValue(departureDateTime);
+        setShowTimePicker(true);
+    };
+
+    const applySelectedDate = (date: Date) => {
+        const next = new Date(departureDateTime);
+        next.setFullYear(date.getFullYear(), date.getMonth(), date.getDate());
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+        if (next < startOfToday) {
+            Alert.alert('Invalid Date', 'Please select today or a future date.');
             return;
         }
-        setSelectedTime(picked);
-        setTime(formatTime(picked));
+        if (time && next < new Date()) {
+            Alert.alert('Invalid Date', 'This date and time are in the past. Pick a later time.');
+            return;
+        }
+        setDepartureDateTime(next);
+        setDateLabel(formatDate(next));
+    };
+
+    const applySelectedTime = (date: Date) => {
+        const next = new Date(departureDateTime);
+        next.setHours(date.getHours(), date.getMinutes(), 0, 0);
+        if (next < new Date()) {
+            Alert.alert('Invalid Time', 'Please select a future date and time.');
+            return;
+        }
+        setDepartureDateTime(next);
+        setTime(formatTime(next));
+        setDateLabel(formatDate(next));
+    };
+
+    const handleDateChange = (event: any, date?: Date) => {
+        if (Platform.OS === 'android') {
+            setShowDatePicker(false);
+        }
+        if (event.type === 'dismissed' || !date) return;
+        applySelectedDate(date);
     };
 
     const handleTimeChange = (event: any, date?: Date) => {
@@ -122,27 +167,23 @@ export default function OfferRideScreen() {
         applySelectedTime(date);
     };
 
+    const confirmIosDate = () => {
+        applySelectedDate(pickerValue);
+        setShowDatePicker(false);
+    };
+
     const confirmIosTime = () => {
-        applySelectedTime(selectedTime);
+        applySelectedTime(pickerValue);
         setShowTimePicker(false);
     };
 
-    // Convert "9:00 AM" or "14:30" to ISO 8601 datetime (today's date)
-    const parseTimeToISO = (timeStr: string): string => {
-        const now = new Date();
-        const [timePart, meridiem] = timeStr.trim().split(' ');
-        let [hours, minutes] = timePart.split(':').map(Number);
-        if (meridiem) {
-            if (meridiem.toUpperCase() === 'PM' && hours !== 12) hours += 12;
-            if (meridiem.toUpperCase() === 'AM' && hours === 12) hours = 0;
-        }
-        now.setHours(hours || 0, minutes || 0, 0, 0);
-        return now.toISOString();
-    };
-
     const handlePublish = async () => {
-        if (!from || !to || !time || !price) {
-            Alert.alert('Error', 'Please fill in all details.');
+        if (!from || !to || !dateLabel || !time || !price) {
+            Alert.alert('Error', 'Please fill in route, date, time, and price.');
+            return;
+        }
+        if (departureDateTime < new Date()) {
+            Alert.alert('Error', 'Departure must be in the future.');
             return;
         }
         setLoading(true);
@@ -150,7 +191,7 @@ export default function OfferRideScreen() {
             await createRide({
                 from_location: from,
                 to_location: to,
-                departure_time: parseTimeToISO(time),
+                departure_time: departureDateTime.toISOString(),
                 available_seats: parseInt(seats),
                 price_per_seat: parseInt(price),
                 driver_name: driverPhone,
@@ -184,14 +225,7 @@ export default function OfferRideScreen() {
                 behavior={Platform.OS === 'ios' ? 'padding' : undefined}
                 style={styles.flex}
             >
-                <ScrollView
-                    style={styles.scroll}
-                    contentContainerStyle={styles.scrollContent}
-                    keyboardShouldPersistTaps="handled"
-                    nestedScrollEnabled
-                    showsVerticalScrollIndicator={false}
-                >
-                <View style={styles.form}>
+                <View style={styles.locationSection}>
                     <View style={styles.routeCard}>
                         <View style={styles.routeLine} pointerEvents="none" />
                         <View style={[styles.fieldWrap, styles.fieldWrapTop]}>
@@ -209,13 +243,34 @@ export default function OfferRideScreen() {
                             />
                         </View>
                     </View>
+                </View>
 
+                <ScrollView
+                    style={styles.scroll}
+                    contentContainerStyle={styles.scrollContent}
+                    keyboardShouldPersistTaps="handled"
+                    showsVerticalScrollIndicator={false}
+                >
+                <View style={styles.form}>
                     <View style={styles.row}>
+                        <View style={styles.halfWidth}>
+                            <Text style={styles.label}>Departure Date</Text>
+                            <TouchableOpacity
+                                style={styles.timeInput}
+                                onPress={openDatePicker}
+                                activeOpacity={0.7}
+                            >
+                                <Text style={styles.timeIcon}>📅</Text>
+                                <Text style={[styles.timeText, !dateLabel && styles.timePlaceholder]}>
+                                    {dateLabel || 'Select date'}
+                                </Text>
+                            </TouchableOpacity>
+                        </View>
                         <View style={styles.halfWidth}>
                             <Text style={styles.label}>Departure Time</Text>
                             <TouchableOpacity
                                 style={styles.timeInput}
-                                onPress={() => setShowTimePicker(true)}
+                                onPress={openTimePicker}
                                 activeOpacity={0.7}
                             >
                                 <Text style={styles.timeIcon}>🕐</Text>
@@ -224,6 +279,9 @@ export default function OfferRideScreen() {
                                 </Text>
                             </TouchableOpacity>
                         </View>
+                    </View>
+
+                    <View style={styles.row}>
                         <View style={styles.halfWidth}>
                             <Text style={styles.label}>Available Seats</Text>
                             <TextInput
@@ -254,7 +312,7 @@ export default function OfferRideScreen() {
                                 💡 Suggested: ₹{suggestedPrice} per seat
                             </Text>
                             <Text style={styles.suggestionSub}>
-                                Based on ₹{petrolPrice}/L petrol • 15km/L mileage • route distance
+                                Based on the fuel prices • 15km/L mileage • route distance
                             </Text>
                         </View>
                     )}
@@ -289,14 +347,50 @@ export default function OfferRideScreen() {
                 </ScrollView>
             </KeyboardAvoidingView>
 
+            {showDatePicker && Platform.OS === 'android' && (
+                <DateTimePicker
+                    value={departureDateTime}
+                    mode="date"
+                    display="default"
+                    minimumDate={new Date()}
+                    onChange={handleDateChange}
+                />
+            )}
+
             {showTimePicker && Platform.OS === 'android' && (
                 <DateTimePicker
-                    value={selectedTime}
+                    value={departureDateTime}
                     mode="time"
                     is24Hour={false}
                     display="default"
                     onChange={handleTimeChange}
                 />
+            )}
+
+            {Platform.OS === 'ios' && (
+                <Modal visible={showDatePicker} transparent animationType="slide">
+                    <View style={styles.pickerOverlay}>
+                        <View style={styles.pickerSheet}>
+                            <View style={styles.pickerHeader}>
+                                <TouchableOpacity onPress={() => setShowDatePicker(false)}>
+                                    <Text style={styles.pickerAction}>Cancel</Text>
+                                </TouchableOpacity>
+                                <Text style={styles.pickerTitle}>Departure Date</Text>
+                                <TouchableOpacity onPress={confirmIosDate}>
+                                    <Text style={[styles.pickerAction, styles.pickerDone]}>Done</Text>
+                                </TouchableOpacity>
+                            </View>
+                            <DateTimePicker
+                                value={pickerValue}
+                                mode="date"
+                                display="spinner"
+                                minimumDate={new Date()}
+                                style={styles.iosPicker}
+                                onChange={(_, date) => date && setPickerValue(date)}
+                            />
+                        </View>
+                    </View>
+                </Modal>
             )}
 
             {Platform.OS === 'ios' && (
@@ -313,12 +407,12 @@ export default function OfferRideScreen() {
                                 </TouchableOpacity>
                             </View>
                             <DateTimePicker
-                                value={selectedTime}
+                                value={pickerValue}
                                 mode="time"
                                 is24Hour={false}
                                 display="spinner"
                                 style={styles.iosPicker}
-                                onChange={(_, date) => date && setSelectedTime(date)}
+                                onChange={(_, date) => date && setPickerValue(date)}
                             />
                         </View>
                     </View>
@@ -333,7 +427,14 @@ const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#f5f5f5' },
     flex: { flex: 1 },
     scroll: { flex: 1 },
-    scrollContent: { paddingBottom: 40 },
+    scrollContent: { paddingHorizontal: 20, paddingBottom: 40 },
+    locationSection: {
+        paddingHorizontal: 20,
+        paddingTop: 16,
+        paddingBottom: 8,
+        zIndex: 9999,
+        overflow: 'visible',
+    },
     header: {
         backgroundColor: '#1a73e8',
         paddingHorizontal: 24,
@@ -344,7 +445,7 @@ const styles = StyleSheet.create({
     headerText: { flex: 1 },
     title: { color: '#fff', fontSize: 26, fontWeight: 'bold' },
     sub: { color: '#fff', fontSize: 16, opacity: 0.9, marginTop: 4 },
-    form: { padding: 20, gap: 16 },
+    form: { paddingHorizontal: 20, paddingTop: 8, gap: 16 },
     routeCard: {
         width: '100%',
         position: 'relative',

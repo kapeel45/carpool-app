@@ -12,19 +12,22 @@ const emptyStats: UserStats = {
 export function useUserStats() {
     const [stats, setStats] = useState<UserStats>(emptyStats);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
 
     const refresh = useCallback(async () => {
         setLoading(true);
+        setError(null);
         try {
             const session = await getSession();
-            if (session?.loggedIn && session.phone) {
+            if (session?.phone) {
                 setStats(await getUserStats(session.phone));
             } else {
                 setStats(emptyStats);
             }
-        } catch (error) {
-            console.error('Failed to load user stats:', error);
+        } catch (err) {
+            console.error('Failed to load user stats:', err);
             setStats(emptyStats);
+            setError('Could not load stats. Tap retry below.');
         } finally {
             setLoading(false);
         }
@@ -36,5 +39,5 @@ export function useUserStats() {
         }, [refresh])
     );
 
-    return { stats, loading, refresh };
+    return { stats, loading, error, refresh };
 }

@@ -3,13 +3,13 @@ import { useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { getRides, getUserBookings, getUserOfferedRides, normalizePhone, resolveDisplayName } from './config/api';
+import { getRides, getUserBookings, getUserOfferedRides, normalizePhone, resolveDisplayName, resolveRelationId } from './config/api';
 import { getSession } from './config/session';
 import { useUserStats } from '@/hooks/use-user-stats';
 
 type RideItem = {
     id: string;
-    type: 'rider' | 'driver';
+    type: 'rider' | 'owner';
     from: string;
     to: string;
     time: string;
@@ -21,6 +21,7 @@ type RideItem = {
     seats: number;
     status: 'confirmed' | 'completed';
     rideId?: string;
+    bookingId?: string;
 };
 
 const formatRideTime = (value?: string) => {
@@ -66,10 +67,10 @@ export default function MyRidesScreen() {
                     ]);
 
                     const nameCache = new Map<string, string>();
-                    const getDriverLabel = async (raw?: string) => {
+                    const getOwnerLabel = async (raw?: string) => {
                         const key = raw || '';
                         if (nameCache.has(key)) return nameCache.get(key)!;
-                        const label = await resolveDisplayName(raw, 'Driver');
+                        const label = await resolveDisplayName(raw, 'Owner');
                         nameCache.set(key, label);
                         return label;
                     };
@@ -78,9 +79,13 @@ export default function MyRidesScreen() {
                     const items: RideItem[] = [];
 
                     for (const booking of bookings) {
-                        const ride = allRides.find(
-                            (r: any) => r.id?.toString() === booking.ride_id?.toString()
-                        );
+                        const rideRef = booking.ride_id;
+                        const rideFromRelation =
+                            typeof rideRef === 'object' && rideRef !== null ? rideRef : null;
+                        const rideIdStr = resolveRelationId(rideRef);
+                        const ride =
+                            rideFromRelation ||
+                            allRides.find((r: any) => r.id?.toString() === rideIdStr);
                         const departure = ride?.departure_time;
                         const isUpcoming = departure ? new Date(departure).getTime() >= now : true;
                         const driverRaw = ride?.driver_name || '';
@@ -91,13 +96,14 @@ export default function MyRidesScreen() {
                             to: ride?.to_location || 'Destination',
                             time: formatRideTime(departure),
                             departureTime: departure || '',
-                            driver: await getDriverLabel(driverRaw),
+                            driver: await getOwnerLabel(driverRaw),
                             driverPhone: normalizePhone(driverRaw) || driverRaw,
                             price: Number(booking.total_price) || 0,
                             pricePerSeat: Number(ride?.price_per_seat) || Number(booking.total_price) || 0,
                             seats: Number(ride?.available_seats) || 1,
                             status: isUpcoming ? 'confirmed' : 'completed',
-                            rideId: ride?.id?.toString(),
+                            rideId: rideIdStr || ride?.id?.toString(),
+                            bookingId: String(booking.id),
                         });
                     }
 
@@ -108,7 +114,7 @@ export default function MyRidesScreen() {
                         const pricePerSeat = Number(ride.price_per_seat) || 0;
                         items.push({
                             id: `ride-${ride.id}`,
-                            type: 'driver',
+                            type: 'owner',
                             from: ride.from_location || 'Pickup',
                             to: ride.to_location || 'Destination',
                             time: formatRideTime(departure),
@@ -141,7 +147,7 @@ export default function MyRidesScreen() {
         <View style={styles.card}>
             <View style={styles.cardTop}>
                 <View style={styles.typeBadge}>
-                    <Text style={styles.typeText}>{ride.type === 'driver' ? '🚗 Driver' : '👤 Rider'}</Text>
+                    <Text style={styles.typeText}>{ride.type === 'owner' ? '🚗 Owner' : '👤 Rider'}</Text>
                 </View>
                 <View style={[styles.statusBadge, ride.status === 'confirmed' ? styles.statusConfirmed : styles.statusCompleted]}>
                     <Text style={styles.statusText}>
@@ -162,11 +168,11 @@ export default function MyRidesScreen() {
             <View style={styles.cardBottom}>
                 <Text style={styles.meta}>🕐 {ride.time}</Text>
                 <Text style={styles.meta}>
-                    {ride.type === 'driver' ? `🧑 ${ride.driver}` : `🧑 Driver: ${ride.driver}`}
+                    {ride.type === 'owner' ? `🧑 ${ride.driver}` : `🧑 Owner: ${ride.driver}`}
                 </Text>
             </View>
 
-            {ride.type === 'rider' && ride.status === 'confirmed' && ride.rideId && (
+            {ride.type === 'rider' && (
                 <TouchableOpacity
                     style={styles.viewButton}
                     onPress={() =>
@@ -174,14 +180,7 @@ export default function MyRidesScreen() {
                             pathname: '/booking',
                             params: {
                                 viewOnly: 'true',
-                                rideId: ride.rideId,
-                                from: ride.from,
-                                to: ride.to,
-                                time: ride.departureTime || ride.time,
-                                price: String(ride.pricePerSeat || ride.price),
-                                driver: ride.driver,
-                                driverPhone: ride.driverPhone,
-                                seats: String(ride.seats || 1),
+                                bookingId: ride.bookingId || '',
                             },
                         })
                     }
@@ -312,11 +311,11 @@ const styles = StyleSheet.create({
     cardBottom: { flexDirection: 'row', gap: 16, marginBottom: 4 },
     meta: { fontSize: 13, color: '#666', flex: 1 },
     viewButton: {
-        backgroundColor: '#f0f5ff',
+        backgroundColor: '#1a73e8',
         borderRadius: 10,
         padding: 12,
         alignItems: 'center',
         marginTop: 12,
     },
-    viewButtonText: { color: '#1a73e8', fontWeight: '600' },
+    viewButtonText: { color: '#fff', fontWeight: '600', fontSize: 15 },
 });

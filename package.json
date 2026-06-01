@@ -5,6 +5,9 @@
   "scripts": {
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",
+    "clear-directus": "node ./scripts/clear-directus.mjs",
+    "fix-duplicate-emails": "node ./scripts/fix-duplicate-emails.mjs",
+    "fix-duplicate-phones": "node ./scripts/fix-duplicate-phones.mjs",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",

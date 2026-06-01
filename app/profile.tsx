@@ -2,7 +2,9 @@ import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { sendEmailOTP, updateUserProfile } from './config/api';
+import { sendEmailOTP, updateUserProfile, normalizeEmail, assertEmailAvailable, findUserByPhone } from './config/api';
+import { validateOfficialWorkEmail } from './config/work-email';
+import { GENDER_OPTIONS, type GenderValue } from './config/gender';
 import { clearSession, getSession, saveSession } from './config/session';
 
 export default function ProfileScreen() {
@@ -14,6 +16,7 @@ export default function ProfileScreen() {
     const [carModel, setCarModel] = useState('');
     const [carNumber, setCarNumber] = useState('');
     const [carColor, setCarColor] = useState('');
+    const [gender, setGender] = useState<GenderValue | ''>('');
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
@@ -27,11 +30,13 @@ export default function ProfileScreen() {
                 return;
             }
             setSession(s);
-            setName(s.name || '');
-            setEmail(s.email || '');
-            setCarModel(s.carModel || '');
-            setCarNumber(s.carNumber || '');
-            setCarColor(s.carColor || '');
+            const user = await findUserByPhone(s.phone);
+            setName(user?.name || s.name || '');
+            setEmail(user?.email || s.email || '');
+            setGender((user?.gender as GenderValue) || (s.gender as GenderValue) || '');
+            setCarModel(user?.car_model || s.carModel || '');
+            setCarNumber(user?.car_number || s.carNumber || '');
+            setCarColor(user?.car_color || s.carColor || '');
             setLoading(false);
         };
         loadProfile();
@@ -42,19 +47,46 @@ export default function ProfileScreen() {
             Alert.alert('Required', 'Please enter your name.');
             return;
         }
+        if (!gender) {
+            Alert.alert('Required', 'Please select your gender.');
+            return;
+        }
+        if (email) {
+            const workCheck = validateOfficialWorkEmail(email);
+            if (!workCheck.valid) {
+                Alert.alert('Company email required', workCheck.message || 'Use your official work email.');
+                return;
+            }
+        }
+        if (email && !email.includes('@')) {
+            Alert.alert('Invalid Email', 'Enter a valid email address.');
+            return;
+        }
         setSaving(true);
         try {
-            await updateUserProfile(session.userId, {
+            const emailChanged =
+                email && normalizeEmail(email) !== normalizeEmail(session?.email || '');
+            const profileData: Record<string, unknown> = {
                 name,
-                email,
+                gender,
                 car_model: carModel,
                 car_number: carNumber,
                 car_color: carColor,
-            });
+            };
+            if (email) {
+                await assertEmailAvailable(email, session.userId);
+                profileData.email = normalizeEmail(email);
+                if (emailChanged) {
+                    profileData.email_verified = false;
+                }
+            }
+            await updateUserProfile(session.userId, profileData);
             await saveSession({
                 ...session,
                 name,
-                email,
+                gender,
+                email: email ? normalizeEmail(email) : session.email,
+                emailVerified: emailChanged ? false : session.emailVerified,
                 carModel,
                 carNumber,
                 carColor,
@@ -62,8 +94,11 @@ export default function ProfileScreen() {
             setSaving(false);
             setIsEditing(false);
             Alert.alert('Saved! ✅', 'Profile saved successfully!');
-        } catch (error) {
-            Alert.alert('Error', 'Could not save profile. Try again.');
+        } catch (error: any) {
+            Alert.alert(
+                'Error',
+                error?.message || 'Could not save profile. Try again.'
+            );
             setSaving(false);
         }
     };
@@ -145,10 +180,39 @@ export default function ProfileScreen() {
                         onChangeText={setName}
                         editable={isEditing}
                     />
+                    <Text style={styles.label}>Gender</Text>
+                    <View style={styles.genderRow}>
+                        {GENDER_OPTIONS.map((option) => {
+                            const selected = gender === option.value;
+                            return (
+                                <TouchableOpacity
+                                    key={option.value}
+                                    style={[
+                                        styles.genderChip,
+                                        selected && styles.genderChipSelected,
+                                        !isEditing && styles.genderChipDisabled,
+                                    ]}
+                                    onPress={() => isEditing && setGender(option.value)}
+                                    disabled={!isEditing}
+                                    activeOpacity={0.7}
+                                >
+                                    <Text style={styles.genderIcon}>{option.icon}</Text>
+                                    <Text
+                                        style={[
+                                            styles.genderLabel,
+                                            selected && styles.genderLabelSelected,
+                                        ]}
+                                    >
+                                        {option.label}
+                                    </Text>
+                                </TouchableOpacity>
+                            );
+                        })}
+                    </View>
                     <Text style={styles.label}>Official Email</Text>
                     <TextInput
                         style={[styles.input, !isEditing && styles.inputReadOnly]}
-                        placeholder="yourname@company.com"
+                        placeholder="name@yourcompany.com"
                         placeholderTextColor="#999"
                         value={email}
                         onChangeText={setEmail}
@@ -156,19 +220,62 @@ export default function ProfileScreen() {
                         autoCapitalize="none"
                         editable={isEditing}
                     />
-                    <Text style={styles.hint}>Only verified email users can offer rides</Text>
+                    <Text style={styles.hint}>
+                        Company or work email only — Gmail, Yahoo, Outlook, etc. are not allowed.
+                    </Text>
                     {email && !session?.emailVerified && (
                         <TouchableOpacity
                             style={styles.verifyButton}
                             onPress={async () => {
+                                if (!email.includes('@')) {
+                                    Alert.alert('Invalid Email', 'Enter a valid email address first.');
+                                    return;
+                                }
+                                const workCheck = validateOfficialWorkEmail(email);
+                                if (!workCheck.valid) {
+                                    Alert.alert('Company email required', workCheck.message || '');
+                                    return;
+                                }
                                 try {
-                                    await sendEmailOTP(email, session.userId);
+                                    const normalized = normalizeEmail(email);
+                                    await assertEmailAvailable(normalized, session.userId);
+
+                                    await updateUserProfile(session.userId, {
+                                        name: name || session.name,
+                                        email: normalized,
+                                        email_verified: false,
+                                        car_model: carModel,
+                                        car_number: carNumber,
+                                        car_color: carColor,
+                                    });
+                                    await saveSession({
+                                        ...session,
+                                        name: name || session.name,
+                                        email: normalized,
+                                        emailVerified: false,
+                                        carModel,
+                                        carNumber,
+                                        carColor,
+                                    });
+
+                                    const result = await sendEmailOTP(normalized, session.userId);
+                                    if (result.devOtp) {
+                                        Alert.alert(
+                                            'OTP Generated',
+                                            `Email is not configured for sending. Use this OTP:\n\n${result.devOtp}`,
+                                            [{ text: 'OK' }]
+                                        );
+                                    }
                                     router.push({
                                         pathname: '/verify-email' as any,
-                                        params: { email },
+                                        params: { email: normalizeEmail(email) },
                                     });
-                                } catch (error) {
-                                    Alert.alert('Error', 'Could not send OTP. Try again.');
+                                } catch (error: any) {
+                                    const message =
+                                        error?.response?.data?.errors?.[0]?.message ||
+                                        error?.message ||
+                                        'Could not send OTP. Try again.';
+                                    Alert.alert('Error', message);
                                 }
                             }}
                         >
@@ -322,6 +429,25 @@ const styles = StyleSheet.create({
     sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#333', marginBottom: 4 },
     cardSub: { fontSize: 13, color: '#999', marginBottom: 12 },
     label: { fontSize: 14, fontWeight: '600', color: '#444', marginBottom: 6, marginTop: 12 },
+    genderRow: { flexDirection: 'row', gap: 8, marginBottom: 4, marginTop: 4 },
+    genderChip: {
+        flex: 1,
+        alignItems: 'center',
+        paddingVertical: 12,
+        paddingHorizontal: 4,
+        borderRadius: 12,
+        borderWidth: 1.5,
+        borderColor: '#ddd',
+        backgroundColor: '#fff',
+    },
+    genderChipSelected: {
+        borderColor: '#1a73e8',
+        backgroundColor: '#f0f5ff',
+    },
+    genderChipDisabled: { opacity: 0.9 },
+    genderIcon: { fontSize: 22, marginBottom: 4 },
+    genderLabel: { fontSize: 12, color: '#666', fontWeight: '600' },
+    genderLabelSelected: { color: '#1a73e8' },
     input: {
         backgroundColor: '#fff',
         borderRadius: 12,
