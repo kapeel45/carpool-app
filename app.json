@@ -41,7 +41,15 @@
           }
         }
       ],
-      "expo-font"
+      "expo-font",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow CarpoolApp to access your photos to set a profile picture.",
+          "cameraPermission": "Allow CarpoolApp to use your camera for a profile selfie.",
+          "microphonePermission": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

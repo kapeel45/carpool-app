@@ -4,7 +4,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LocationInput from './components/LocationInput';
+import ProfileNavButton from './components/ProfileNavButton';
 import RideMap from './components/RideMap';
+import RideOwnerRow from './components/RideOwnerRow';
 import SeatSelector from './components/SeatSelector';
 import {
     cancelBooking,
@@ -50,7 +52,7 @@ export default function SearchScreen() {
     const [seatsToBookByRideId, setSeatsToBookByRideId] = useState<Record<string, number>>({});
     const [bookingRideId, setBookingRideId] = useState<string | null>(null);
     const [driverProfiles, setDriverProfiles] = useState<
-        Record<string, { name: string; gender?: string }>
+        Record<string, { name: string; gender?: string; photoUrl?: string | null }>
     >({});
 
     const syncActiveBookings = async (phone: string) => {
@@ -110,8 +112,8 @@ export default function SearchScreen() {
 
         let cancelled = false;
         const loadDriverProfiles = async () => {
-            const cache = new Map<string, { name: string; gender?: string }>();
-            const entries: Record<string, { name: string; gender?: string }> = {};
+            const cache = new Map<string, { name: string; gender?: string; photoUrl?: string | null }>();
+            const entries: Record<string, { name: string; gender?: string; photoUrl?: string | null }> = {};
 
             for (const ride of rides) {
                 const raw = ride.driver_name || ride.driver_phone || '';
@@ -286,9 +288,12 @@ export default function SearchScreen() {
     return (
         <View style={styles.container}>
             <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
-                <TouchableOpacity onPress={() => router.back()} style={styles.backButton} hitSlop={12}>
-                    <Text style={styles.backText}>← Back</Text>
-                </TouchableOpacity>
+                <View style={styles.headerTopRow}>
+                    <TouchableOpacity onPress={() => router.back()} style={styles.backButton} hitSlop={12}>
+                        <Text style={styles.backText}>← Back</Text>
+                    </TouchableOpacity>
+                    <ProfileNavButton size={40} variant="light" />
+                </View>
                 <View style={styles.headerText}>
                     <Text style={styles.title}>Find a Ride</Text>
                     <Text style={styles.subtitle}>Search carpools on your route</Text>
@@ -343,6 +348,9 @@ export default function SearchScreen() {
                     const driver = driverProfiles[rideId];
                     const ownerName = driver?.name || 'Owner';
                     const genderDisplay = getGenderDisplay(driver?.gender);
+                    const ownerSubtitle = genderDisplay
+                        ? `${genderDisplay.icon} ${genderDisplay.label}`
+                        : undefined;
                     const seatsLeft = getAvailableSeats(item);
                     const isFull = seatsLeft < 1 && !isBooked;
                     const seatsToBook = getSeatsToBook(rideId, seatsLeft);
@@ -353,14 +361,12 @@ export default function SearchScreen() {
                     return (
                         <View key={rideId} style={styles.rideCard}>
                             <View style={styles.rideTop}>
-                                <View style={styles.driverBlock}>
-                                    <Text style={styles.driverName}>🧑 {ownerName}</Text>
-                                    {genderDisplay ? (
-                                        <Text style={styles.genderMeta}>
-                                            {genderDisplay.icon} {genderDisplay.label}
-                                        </Text>
-                                    ) : null}
-                                </View>
+                                <RideOwnerRow
+                                    name={ownerName}
+                                    photoUrl={driver?.photoUrl}
+                                    subtitle={ownerSubtitle}
+                                    size={44}
+                                />
                                 <Text style={styles.price}>₹{item.price_per_seat}</Text>
                             </View>
                             <View style={styles.rideMiddle}>
@@ -467,8 +473,14 @@ const styles = StyleSheet.create({
         paddingHorizontal: 24,
         paddingBottom: 24,
     },
-    backButton: { marginBottom: 12 },
+    backButton: { marginBottom: 0 },
     backText: { color: '#fff', fontSize: 16, fontWeight: '600', opacity: 0.95 },
+    headerTopRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 12,
+    },
     headerText: { flex: 1 },
     title: { color: '#fff', fontSize: 26, fontWeight: 'bold' },
     subtitle: { color: '#fff', fontSize: 16, opacity: 0.9, marginTop: 4 },

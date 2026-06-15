@@ -119,6 +119,20 @@ const APP_USER_FIELDS = [
         schema: { is_nullable: true, max_length: 50 },
     },
     {
+        field: 'profile_photo',
+        type: 'uuid',
+        meta: {
+            interface: 'file-image',
+            special: ['file'],
+            note: 'Profile picture (gallery or camera)',
+        },
+        schema: {
+            is_nullable: true,
+            foreign_key_table: 'directus_files',
+            foreign_key_column: 'id',
+        },
+    },
+    {
         field: 'total_rides',
         type: 'integer',
         meta: { interface: 'input', hidden: true },

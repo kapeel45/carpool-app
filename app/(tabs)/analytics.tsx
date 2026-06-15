@@ -2,15 +2,21 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { getUserBookings, getUserOfferedRides } from '@/app/config/api';
-import { getSession } from '@/app/config/session';
+import ProfileNavButton from '@/app/components/ProfileNavButton';
+import RideOwnerRow from '@/app/components/RideOwnerRow';
+import { getUserBookings, getUserOfferedRides, resolveOwnerInfo } from '@/app/config/api';
+import { refreshSessionFromServer } from '@/app/config/session';
 import { useUserStats } from '@/hooks/use-user-stats';
+import type { OwnerInfo } from '@/app/config/api';
 
 export default function AnalyticsScreen() {
     const insets = useSafeAreaInsets();
     const { stats, loading, error: statsError, refresh } = useUserStats();
     const [bookings, setBookings] = useState<any[]>([]);
     const [offeredRides, setOfferedRides] = useState<any[]>([]);
+    const [myPhotoUrl, setMyPhotoUrl] = useState<string | null>(null);
+    const [myName, setMyName] = useState('');
+    const [bookingOwnerInfo, setBookingOwnerInfo] = useState<Record<string, OwnerInfo>>({});
     const [activityLoading, setActivityLoading] = useState(true);
     const [activityError, setActivityError] = useState<string | null>(null);
 
@@ -20,17 +26,34 @@ export default function AnalyticsScreen() {
                 setActivityLoading(true);
                 setActivityError(null);
                 try {
-                    const session = await getSession();
+                    const session = await refreshSessionFromServer();
                     if (session?.phone) {
+                        setMyName(session.name?.trim() || '');
+                        setMyPhotoUrl(session.profilePhotoUrl || null);
                         const [userBookings, userRides] = await Promise.all([
                             getUserBookings(session.phone),
                             getUserOfferedRides(session.phone),
                         ]);
                         setBookings(userBookings);
                         setOfferedRides(userRides);
+
+                        const ownerMap: Record<string, OwnerInfo> = {};
+                        for (const booking of userBookings) {
+                            const rideRef = booking.ride_id;
+                            const ride =
+                                typeof rideRef === 'object' && rideRef !== null ? rideRef : null;
+                            const driverRaw = ride?.driver_name || '';
+                            if (driverRaw && !ownerMap[driverRaw]) {
+                                ownerMap[driverRaw] = await resolveOwnerInfo(driverRaw);
+                            }
+                        }
+                        setBookingOwnerInfo(ownerMap);
                     } else {
                         setBookings([]);
                         setOfferedRides([]);
+                        setMyPhotoUrl(null);
+                        setMyName('');
+                        setBookingOwnerInfo({});
                     }
                 } catch (err) {
                     console.error('Failed to load analytics activity:', err);
@@ -74,8 +97,13 @@ export default function AnalyticsScreen() {
     return (
         <View style={styles.container}>
             <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
-                <Text style={styles.title}>Analytics</Text>
-                <Text style={styles.subtitle}>Your carpool activity overview</Text>
+                <View style={styles.headerRow}>
+                    <View style={styles.headerText}>
+                        <Text style={styles.title}>Analytics</Text>
+                        <Text style={styles.subtitle}>Your carpool activity overview</Text>
+                    </View>
+                    <ProfileNavButton size={40} variant="light" />
+                </View>
             </View>
 
             <ScrollView
@@ -119,15 +147,37 @@ export default function AnalyticsScreen() {
                         <Text style={styles.emptyText}>No bookings yet. Find a ride to get started.</Text>
                     </View>
                 ) : (
-                    bookings.map((booking) => (
-                        <View key={booking.id} style={styles.card}>
-                            <Text style={styles.cardTitle}>🧑 Booking</Text>
-                            <Text style={styles.cardMeta}>
-                                ₹{booking.total_price} • {booking.seats_booked || 1} seat(s)
-                            </Text>
-                            <Text style={styles.cardSub}>{booking.payment_status || 'pending'}</Text>
-                        </View>
-                    ))
+                    bookings.map((booking) => {
+                        const rideRef = booking.ride_id;
+                        const ride =
+                            typeof rideRef === 'object' && rideRef !== null ? rideRef : null;
+                        const driverRaw = ride?.driver_name || '';
+                        const owner = bookingOwnerInfo[driverRaw] || {
+                            name: 'Ride owner',
+                            photoUrl: null,
+                        };
+                        const route =
+                            ride?.from_location && ride?.to_location
+                                ? `${ride.from_location} → ${ride.to_location}`
+                                : undefined;
+                        return (
+                            <View key={booking.id} style={styles.card}>
+                                <RideOwnerRow
+                                    name={owner.name}
+                                    photoUrl={owner.photoUrl}
+                                    subtitle={
+                                        route ||
+                                        `₹${booking.total_price} • ${booking.seats_booked || 1} seat(s)`
+                                    }
+                                    size={36}
+                                />
+                                <Text style={styles.cardMeta}>
+                                    ₹{booking.total_price} • {booking.seats_booked || 1} seat(s)
+                                </Text>
+                                <Text style={styles.cardSub}>{booking.payment_status || 'pending'}</Text>
+                            </View>
+                        );
+                    })
                 )}
 
                 <Text style={styles.sectionTitle}>Published by you</Text>
@@ -140,7 +190,12 @@ export default function AnalyticsScreen() {
                 ) : (
                     offeredRides.map((ride) => (
                         <View key={ride.id} style={styles.card}>
-                            <Text style={styles.cardTitle}>🚗 {ride.from_location} → {ride.to_location}</Text>
+                            <RideOwnerRow
+                                name={myName || 'You'}
+                                photoUrl={myPhotoUrl}
+                                subtitle={`${ride.from_location} → ${ride.to_location}`}
+                                size={36}
+                            />
                             <Text style={styles.cardMeta}>
                                 ₹{ride.price_per_seat}/seat • {ride.available_seats} seats
                             </Text>
@@ -162,6 +217,8 @@ const styles = StyleSheet.create({
         paddingHorizontal: 24,
         paddingBottom: 24,
     },
+    headerRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
+    headerText: { flex: 1, paddingRight: 12 },
     title: { color: '#fff', fontSize: 26, fontWeight: 'bold' },
     subtitle: { color: '#fff', fontSize: 16, opacity: 0.9, marginTop: 4 },
     loader: { marginVertical: 24 },

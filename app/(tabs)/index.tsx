@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import NotificationBell from '../components/NotificationBell';
+import ProfileNavButton from '../components/ProfileNavButton';
 import { getFuelPrices, getDisplayName } from '../config/api';
 import { getSession } from '../config/session';
 import { useUserStats } from '@/hooks/use-user-stats';
@@ -60,11 +61,7 @@ export default function HomeScreen() {
           </View>
           <View style={styles.headerActions}>
             {isLoggedIn ? <NotificationBell /> : null}
-            <TouchableOpacity onPress={() => router.push('/profile')}>
-              <View style={styles.profileIcon}>
-                <Text style={styles.profileIconText}>👤</Text>
-              </View>
-            </TouchableOpacity>
+            <ProfileNavButton size={44} variant="light" />
           </View>
         </View>
       </View>
@@ -180,6 +177,4 @@ const styles = StyleSheet.create({
   statsLoader: { flex: 1, paddingVertical: 8 },
   statNumber: { fontSize: 24, fontWeight: 'bold', color: '#1a73e8' },
   statLabel: { fontSize: 12, color: '#666', marginTop: 4, textAlign: 'center', minWidth: 56 },
-  profileIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center' },
-  profileIconText: { fontSize: 22 },
 });

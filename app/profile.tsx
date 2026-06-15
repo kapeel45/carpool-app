@@ -5,13 +5,16 @@ import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TextInput, Touc
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
     canOfferRides,
+    clearProfilePhoto,
     fetchAppUserProfile,
     sendEmailOTP,
     updateUserProfile,
+    uploadProfilePhoto,
     normalizeEmail,
     assertEmailAvailable,
     mergeSessionFromUser,
 } from './config/api';
+import ProfileAvatarPicker from './components/ProfileAvatarPicker';
 import { validateOfficialWorkEmail } from './config/work-email';
 import { GENDER_OPTIONS, type GenderValue } from './config/gender';
 import { clearSession, getSession, refreshSessionFromServer, saveSession } from './config/session';
@@ -29,6 +32,8 @@ export default function ProfileScreen() {
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
+    const [profilePhotoUrl, setProfilePhotoUrl] = useState<string | null>(null);
+    const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
     const loadProfile = useCallback(async () => {
         setLoading(true);
@@ -66,6 +71,7 @@ export default function ProfileScreen() {
         setCarModel(merged.carModel || '');
         setCarNumber(merged.carNumber || '');
         setCarColor(merged.carColor || '');
+        setProfilePhotoUrl(merged.profilePhotoUrl || null);
         setLoading(false);
     }, [router]);
 
@@ -74,6 +80,49 @@ export default function ProfileScreen() {
             loadProfile();
         }, [loadProfile])
     );
+
+    const handlePhotoSelected = async (uri: string) => {
+        if (!session?.userId) return;
+        setProfilePhotoUrl(uri);
+        setUploadingPhoto(true);
+        try {
+            const { url } = await uploadProfilePhoto(session.userId, uri);
+            const nextSession = { ...session, profilePhotoUrl: url || uri };
+            await saveSession(nextSession);
+            setSession(nextSession);
+            setProfilePhotoUrl(url || uri);
+        } catch (error: any) {
+            setProfilePhotoUrl(session.profilePhotoUrl || null);
+            Alert.alert('Error', error?.message || 'Could not upload profile photo.');
+        } finally {
+            setUploadingPhoto(false);
+        }
+    };
+
+    const handleRemovePhoto = () => {
+        if (!session?.userId) return;
+        Alert.alert('Remove photo?', 'Your profile will show your initial instead.', [
+            { text: 'Cancel', style: 'cancel' },
+            {
+                text: 'Remove',
+                style: 'destructive',
+                onPress: async () => {
+                    setUploadingPhoto(true);
+                    try {
+                        await clearProfilePhoto(session.userId);
+                        const nextSession = { ...session, profilePhotoUrl: null };
+                        await saveSession(nextSession);
+                        setSession(nextSession);
+                        setProfilePhotoUrl(null);
+                    } catch (error: any) {
+                        Alert.alert('Error', error?.message || 'Could not remove photo.');
+                    } finally {
+                        setUploadingPhoto(false);
+                    }
+                },
+            },
+        ]);
+    };
 
     const handleSave = async () => {
         if (!name) {
@@ -195,11 +244,18 @@ export default function ProfileScreen() {
                 keyboardShouldPersistTaps="handled"
             >
                 <View style={styles.profileCard}>
-                    <View style={styles.avatar}>
-                        <Text style={styles.avatarText}>
-                            {name ? name[0].toUpperCase() : '👤'}
-                        </Text>
-                    </View>
+                    <ProfileAvatarPicker
+                        name={name}
+                        photoUrl={profilePhotoUrl}
+                        uploading={uploadingPhoto}
+                        onPhotoSelected={handlePhotoSelected}
+                        onRemovePhoto={handleRemovePhoto}
+                    />
+                    <Text style={styles.photoHint}>
+                        {uploadingPhoto
+                            ? 'Uploading photo…'
+                            : 'Tap photo to take a selfie or choose from gallery'}
+                    </Text>
                     <Text style={styles.phone}>+91 {session?.phone}</Text>
                     {email ? (
                         <View style={styles.emailBadge}>
@@ -453,16 +509,13 @@ const styles = StyleSheet.create({
         marginBottom: 16,
         elevation: 2,
     },
-    avatar: {
-        width: 80,
-        height: 80,
-        borderRadius: 40,
-        backgroundColor: '#1a73e8',
-        justifyContent: 'center',
-        alignItems: 'center',
-        marginBottom: 12,
+    photoHint: {
+        fontSize: 12,
+        color: '#888',
+        marginBottom: 8,
+        textAlign: 'center',
+        fontWeight: '500',
     },
-    avatarText: { fontSize: 36, color: '#fff', fontWeight: 'bold' },
     phone: { fontSize: 16, color: '#333', fontWeight: '600' },
     emailBadge: {
         marginTop: 8,

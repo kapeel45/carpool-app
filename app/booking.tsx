@@ -3,6 +3,8 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import RideMap from './components/RideMap';
+import ProfileAvatar from './components/ProfileAvatar';
+import ProfileNavButton from './components/ProfileNavButton';
 import SeatSelector from './components/SeatSelector';
 import {
     cancelBooking,
@@ -12,7 +14,7 @@ import {
     getRideById,
     isCancelledBooking,
     normalizePhone,
-    resolveDisplayName,
+    resolveOwnerInfo,
     resolveRelationId,
 } from './config/api';
 import { getSession } from './config/session';
@@ -24,6 +26,7 @@ type BookingDetails = {
     pricePerSeat: number;
     driver: string;
     driverPhone: string;
+    driverPhotoUrl?: string | null;
     availableSeats: number;
     seatsBooked: number;
     paymentStatus: string;
@@ -51,15 +54,16 @@ const buildDetailsFromRide = async (
     options?: { pricePerSeat?: number; paymentStatus?: string; seatsBooked?: number }
 ) => {
     const driverRaw = ride?.driver_name || '';
-    const driverName = await resolveDisplayName(driverRaw, 'Owner');
+    const ownerInfo = await resolveOwnerInfo(driverRaw);
     const pricePerSeat = options?.pricePerSeat ?? (Number(ride?.price_per_seat) || 0);
     return {
         from: ride?.from_location || 'Pickup',
         to: ride?.to_location || 'Destination',
         time: ride?.departure_time || '',
         pricePerSeat,
-        driver: driverName,
+        driver: ownerInfo.name,
         driverPhone: normalizePhone(driverRaw) || driverRaw,
+        driverPhotoUrl: ownerInfo.photoUrl,
         availableSeats: getAvailableSeats(ride),
         seatsBooked: options?.seatsBooked ?? 1,
         paymentStatus: options?.paymentStatus || 'pending',
@@ -149,9 +153,9 @@ export default function BookingScreen() {
                 }
 
                 const driverRaw = paramAsString(params.driverPhone) || paramAsString(params.driver);
-                const driverName = driverRaw
-                    ? await resolveDisplayName(driverRaw, paramAsString(params.driver) || 'Owner')
-                    : paramAsString(params.driver) || 'Owner';
+                const ownerInfo = driverRaw
+                    ? await resolveOwnerInfo(driverRaw)
+                    : { name: paramAsString(params.driver) || 'Owner', photoUrl: null as string | null };
                 const availableSeats = parseInt(paramAsString(params.seats), 10) || 1;
 
                 if (!cancelled) {
@@ -160,8 +164,9 @@ export default function BookingScreen() {
                         to: paramAsString(params.to) || 'Destination',
                         time: paramAsString(params.time),
                         pricePerSeat: parseInt(paramAsString(params.price), 10) || 0,
-                        driver: driverName,
+                        driver: ownerInfo.name,
                         driverPhone: normalizePhone(driverRaw) || driverRaw,
+                        driverPhotoUrl: ownerInfo.photoUrl,
                         availableSeats,
                         seatsBooked: 1,
                         paymentStatus: 'pending',
@@ -311,9 +316,12 @@ export default function BookingScreen() {
     return (
         <View style={styles.container}>
             <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
-                <TouchableOpacity onPress={() => router.back()} style={styles.backButton} hitSlop={12}>
-                    <Text style={styles.backText}>← Back</Text>
-                </TouchableOpacity>
+                <View style={styles.headerTopRow}>
+                    <TouchableOpacity onPress={() => router.back()} style={styles.backButton} hitSlop={12}>
+                        <Text style={styles.backText}>← Back</Text>
+                    </TouchableOpacity>
+                    <ProfileNavButton size={40} variant="light" />
+                </View>
                 <View style={styles.headerText}>
                     <Text style={styles.title}>Booking Details</Text>
                     <Text style={styles.subtitle}>Your confirmed carpool trip</Text>
@@ -407,11 +415,11 @@ export default function BookingScreen() {
                     <View style={styles.card}>
                         <Text style={styles.sectionTitle}>Ride Owner</Text>
                         <View style={styles.driverRow}>
-                            <View style={styles.avatar}>
-                                <Text style={styles.avatarText}>
-                                    {details?.driver ? details.driver[0].toUpperCase() : 'O'}
-                                </Text>
-                            </View>
+                            <ProfileAvatar
+                                name={details?.driver}
+                                photoUrl={details?.driverPhotoUrl}
+                                size={44}
+                            />
                             <View style={styles.driverInfo}>
                                 <Text style={styles.driverName}>{details?.driver || 'Owner'}</Text>
                                 <Text style={styles.driverMeta}>
@@ -477,8 +485,14 @@ const styles = StyleSheet.create({
         paddingHorizontal: 24,
         paddingBottom: 24,
     },
-    backButton: { marginBottom: 12 },
+    backButton: { marginBottom: 0 },
     backText: { color: '#fff', fontSize: 16, fontWeight: '600', opacity: 0.95 },
+    headerTopRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 12,
+    },
     headerText: { flex: 1 },
     title: { color: '#fff', fontSize: 26, fontWeight: 'bold' },
     subtitle: { color: '#fff', fontSize: 16, opacity: 0.9, marginTop: 4 },

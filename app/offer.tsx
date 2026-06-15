@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LocationInput from './components/LocationInput';
+import ProfileNavButton from './components/ProfileNavButton';
 import {
     calculateSuggestedPrice,
     countActiveBookingsForRide,
@@ -322,9 +323,12 @@ export default function OfferRideScreen() {
     return (
         <View style={styles.container}>
             <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
-                <TouchableOpacity onPress={() => router.back()} style={styles.backButton} hitSlop={12}>
-                    <Text style={styles.backText}>← Back</Text>
-                </TouchableOpacity>
+                <View style={styles.headerTopRow}>
+                    <TouchableOpacity onPress={() => router.back()} style={styles.backButton} hitSlop={12}>
+                        <Text style={styles.backText}>← Back</Text>
+                    </TouchableOpacity>
+                    <ProfileNavButton size={40} variant="light" />
+                </View>
                 <View style={styles.headerText}>
                     <Text style={styles.title}>{isEditMode ? 'Edit Ride' : 'Offer a Ride'}</Text>
                     <Text style={styles.sub}>
@@ -564,8 +568,14 @@ const styles = StyleSheet.create({
         paddingHorizontal: 24,
         paddingBottom: 24,
     },
-    backButton: { marginBottom: 12 },
+    backButton: { marginBottom: 0 },
     backText: { color: '#fff', fontSize: 16, fontWeight: '600', opacity: 0.95 },
+    headerTopRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 12,
+    },
     headerText: { flex: 1 },
     title: { color: '#fff', fontSize: 26, fontWeight: 'bold' },
     sub: { color: '#fff', fontSize: 16, opacity: 0.9, marginTop: 4 },

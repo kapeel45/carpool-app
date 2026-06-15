@@ -1,6 +1,7 @@
 import { useRouter } from 'expo-router';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import ProfileNavButton from './components/ProfileNavButton';
 import { markAllNotificationsRead, markNotificationRead } from './config/api';
 import { getSession } from './config/session';
 import { useNotifications } from '@/hooks/use-notifications';
@@ -45,11 +46,14 @@ export default function NotificationsScreen() {
                                 : 'Booking updates and alerts'}
                         </Text>
                     </View>
-                    {unreadCount > 0 ? (
-                        <TouchableOpacity onPress={handleMarkAllRead} style={styles.markAllButton}>
-                            <Text style={styles.markAllText}>Mark all read</Text>
-                        </TouchableOpacity>
-                    ) : null}
+                    <View style={styles.headerActions}>
+                        {unreadCount > 0 ? (
+                            <TouchableOpacity onPress={handleMarkAllRead} style={styles.markAllButton}>
+                                <Text style={styles.markAllText}>Mark all read</Text>
+                            </TouchableOpacity>
+                        ) : null}
+                        <ProfileNavButton size={40} variant="light" />
+                    </View>
                 </View>
             </View>
 
@@ -111,6 +115,7 @@ const styles = StyleSheet.create({
     backButton: { marginBottom: 12 },
     backText: { color: '#fff', fontSize: 16, fontWeight: '600', opacity: 0.95 },
     headerRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
+    headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
     headerText: { flex: 1, paddingRight: 12 },
     title: { color: '#fff', fontSize: 26, fontWeight: 'bold' },
     subtitle: { color: '#fff', fontSize: 15, opacity: 0.9, marginTop: 4 },

@@ -97,7 +97,17 @@ Root layout: `app/_layout.tsx` registers all stack routes.
 | `car_model` | Offer rides | Required on profile save |
 | `car_number` | Offer rides | Required on profile save |
 | `car_color` | Optional | |
+| `profile_photo` | Optional | Directus file (UUID); gallery or camera selfie |
 | `gender` | Optional | `male` / `female` / `other` |
+
+### Profile photo
+
+- Tap avatar on **Profile** → **Take selfie** or **Choose from gallery** (square crop).
+- Photo uploads to Directus `/files`, linked on `app_users.profile_photo`.
+- Session stores resolved URL as `profilePhotoUrl`.
+- **Remove photo** option when a photo exists.
+- Requires `profile_photo` field: `npm run setup-directus-fields` (if not already run).
+- Uses `expo-image-picker`; camera/gallery permissions in `app.json`.
 
 ### Work email rules (`app/config/work-email.ts`)
 
@@ -365,7 +375,7 @@ Central axios client with `EXPO_PUBLIC_DIRECTUS_TOKEN`. Grouped exports:
 | `app/components/RideMap.tsx` | Route map (native) |
 | `app/components/RideMap.web.tsx` | Web fallback |
 | `app/components/SeatSelector.tsx` | +/- seat picker |
-| `app/components/NotificationBell.tsx` | Bell + unread badge → notifications screen |
+| `app/components/ProfileAvatarPicker.tsx` | Profile photo: camera, gallery, remove |
 | `hooks/use-user-stats.ts` | Stats with focus refresh |
 | `hooks/use-notifications.ts` | Notification list + unread count |
 | `app/config/session.ts` | AsyncStorage session |

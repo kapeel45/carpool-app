@@ -12,6 +12,8 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import NotificationBell from './components/NotificationBell';
+import ProfileNavButton from './components/ProfileNavButton';
+import RideOwnerRow from './components/RideOwnerRow';
 import {
     cancelBooking,
     getBookingsForOwnerRides,
@@ -22,10 +24,10 @@ import {
     getUserOfferedRides,
     isCancelledBooking,
     normalizePhone,
-    resolveDisplayName,
+    resolveOwnerInfo,
     resolveRelationId,
 } from './config/api';
-import { getSession } from './config/session';
+import { getSession, refreshSessionFromServer } from './config/session';
 import { useUserStats } from '@/hooks/use-user-stats';
 
 type RiderBooking = {
@@ -45,6 +47,7 @@ type RideItem = {
     departureTime: string;
     driver: string;
     driverPhone: string;
+    driverPhotoUrl?: string | null;
     price: number;
     pricePerSeat: number;
     seats: number;
@@ -128,7 +131,7 @@ export default function MyRidesScreen() {
             const loadRides = async () => {
                 setLoading(true);
                 try {
-                    const session = await getSession();
+                    const session = (await refreshSessionFromServer()) || (await getSession());
                     if (!session?.phone) {
                         setUserName('');
                         setUserPhone('');
@@ -164,15 +167,20 @@ export default function MyRidesScreen() {
                         ownerBookingsByRide.set(rideIdStr, list);
                     }
 
-                    const nameCache = new Map<string, string>();
-                    const getOwnerLabel = async (raw?: string) => {
+                    const ownerInfoCache = new Map<
+                        string,
+                        { name: string; photoUrl?: string | null }
+                    >();
+                    const getOwnerInfo = async (raw?: string) => {
                         const key = raw || '';
-                        if (nameCache.has(key)) return nameCache.get(key)!;
-                        const label = await resolveDisplayName(raw, 'Owner');
-                        nameCache.set(key, label);
-                        return label;
+                        if (ownerInfoCache.has(key)) return ownerInfoCache.get(key)!;
+                        const info = await resolveOwnerInfo(raw);
+                        const entry = { name: info.name, photoUrl: info.photoUrl };
+                        ownerInfoCache.set(key, entry);
+                        return entry;
                     };
 
+                    const myPhotoUrl = session.profilePhotoUrl || null;
                     const now = Date.now();
                     const items: RideItem[] = [];
 
@@ -189,6 +197,7 @@ export default function MyRidesScreen() {
                         const departure = ride?.departure_time;
                         const isUpcoming = departure ? new Date(departure).getTime() >= now : true;
                         const driverRaw = ride?.driver_name || '';
+                        const ownerInfo = await getOwnerInfo(driverRaw);
                         items.push({
                             id: `booking-${booking.id}`,
                             type: 'rider',
@@ -196,8 +205,9 @@ export default function MyRidesScreen() {
                             to: ride?.to_location || 'Destination',
                             time: formatRideTime(departure),
                             departureTime: departure || '',
-                            driver: await getOwnerLabel(driverRaw),
+                            driver: ownerInfo.name,
                             driverPhone: normalizePhone(driverRaw) || driverRaw,
+                            driverPhotoUrl: ownerInfo.photoUrl,
                             price: Number(booking.total_price) || 0,
                             pricePerSeat: Number(ride?.price_per_seat) || Number(booking.total_price) || 0,
                             seats: Math.max(1, Number(booking.seats_booked) || 1),
@@ -223,6 +233,7 @@ export default function MyRidesScreen() {
                             departureTime: departure || '',
                             driver: getDisplayName(session.name) || 'You',
                             driverPhone: session.phone,
+                            driverPhotoUrl: myPhotoUrl,
                             price: seats * pricePerSeat,
                             pricePerSeat,
                             seats,
@@ -269,11 +280,17 @@ export default function MyRidesScreen() {
                 <Text style={styles.price}>₹{ride.price}</Text>
             </View>
 
+            <View style={styles.ownerRowWrap}>
+                <RideOwnerRow
+                    name={ride.driver}
+                    photoUrl={ride.driverPhotoUrl}
+                    subtitle={ride.type === 'owner' ? 'Posted by you' : 'Ride owner'}
+                    size={36}
+                />
+            </View>
+
             <View style={styles.cardBottom}>
                 <Text style={styles.meta}>🕐 {ride.time}</Text>
-                <Text style={styles.meta}>
-                    {ride.type === 'owner' ? `🧑 ${ride.driver}` : `🧑 Owner: ${ride.driver}`}
-                </Text>
             </View>
 
             {ride.type === 'rider' && (
@@ -378,7 +395,10 @@ export default function MyRidesScreen() {
                             {userName ? `Hi ${userName} • your bookings and offered rides` : 'Your bookings and offered rides'}
                         </Text>
                     </View>
-                    <NotificationBell />
+                    <View style={styles.headerActions}>
+                        <NotificationBell />
+                        <ProfileNavButton size={40} variant="light" />
+                    </View>
                 </View>
             </View>
 
@@ -448,6 +468,7 @@ const styles = StyleSheet.create({
     backButton: { marginBottom: 12 },
     backText: { color: '#fff', fontSize: 16, fontWeight: '600', opacity: 0.95 },
     headerRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
+    headerActions: { flexDirection: 'row', alignItems: 'center', gap: 10 },
     headerText: { flex: 1, paddingRight: 12 },
     title: { color: '#fff', fontSize: 26, fontWeight: 'bold' },
     subtitle: { color: '#fff', fontSize: 16, opacity: 0.9, marginTop: 4 },
@@ -485,6 +506,7 @@ const styles = StyleSheet.create({
     routeDetails: { flex: 1, paddingRight: 12 },
     routeText: { fontSize: 14, color: '#333', fontWeight: '500' },
     routeLine: { color: '#ccc', fontSize: 12, marginVertical: 4 },
+    ownerRowWrap: { marginBottom: 10 },
     price: { fontSize: 20, fontWeight: 'bold', color: '#1a73e8' },
     cardBottom: { flexDirection: 'row', gap: 16, marginBottom: 4 },
     meta: { fontSize: 13, color: '#666', flex: 1 },

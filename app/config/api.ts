@@ -290,6 +290,7 @@ export const buildSessionFromUser = (user: {
     car_model?: string | null;
     car_number?: string | null;
     car_color?: string | null;
+    profile_photo?: unknown;
 }) => ({
     loggedIn: true,
     userId: user.id,
@@ -301,11 +302,12 @@ export const buildSessionFromUser = (user: {
     carModel: user.car_model,
     carNumber: user.car_number,
     carColor: user.car_color,
+    profilePhotoUrl: resolveProfilePhotoUrl(user.profile_photo),
 });
 
 /** Profile reads — never request mpin (often blocked); avoids fallback wiping email/car. */
 const USER_PROFILE_FIELDS =
-    'id,phone,name,email,email_verified,car_model,car_number,car_color,gender';
+    'id,phone,name,email,email_verified,car_model,car_number,car_color,gender,profile_photo';
 const USER_AUTH_FIELDS = 'id,phone,name,mpin';
 
 /** Full profile from Directus (all fields the token can read). */
@@ -372,7 +374,99 @@ export const mergeSessionFromUser = (
         carModel: has('car_model') ? user.car_model : existing?.carModel,
         carNumber: has('car_number') ? user.car_number : existing?.carNumber,
         carColor: has('car_color') ? user.car_color : existing?.carColor,
+        profilePhotoUrl:
+            'profile_photo' in user
+                ? resolveProfilePhotoUrl(user.profile_photo)
+                : existing?.profilePhotoUrl,
     };
+};
+
+const getApiBaseUrl = () => String(api.defaults.baseURL || process.env.EXPO_PUBLIC_DIRECTUS_URL || '').replace(/\/$/, '');
+
+/** Build a displayable URL for a Directus file id or expanded file object. */
+export const resolveProfilePhotoUrl = (photo: unknown): string | null => {
+    if (photo == null || photo === '') return null;
+
+    const base = getApiBaseUrl();
+    if (!base) return null;
+
+    const assetUrl = (id: string) => {
+        const params = new URLSearchParams({
+            width: '240',
+            height: '240',
+            fit: 'cover',
+        });
+        if (ADMIN_TOKEN) {
+            params.set('access_token', ADMIN_TOKEN);
+        }
+        return `${base}/assets/${id}?${params.toString()}`;
+    };
+
+    if (typeof photo === 'string') {
+        if (/^[0-9a-f-]{36}$/i.test(photo)) return assetUrl(photo);
+        if (photo.startsWith('file://') || photo.startsWith('content://')) return photo;
+        if (photo.startsWith('http')) {
+            if (ADMIN_TOKEN && photo.includes('/assets/') && !photo.includes('access_token')) {
+                const sep = photo.includes('?') ? '&' : '?';
+                return `${photo}${sep}access_token=${encodeURIComponent(ADMIN_TOKEN)}`;
+            }
+            return photo;
+        }
+        return `${base}${photo.startsWith('/') ? '' : '/'}${photo}`;
+    }
+
+    if (typeof photo === 'object') {
+        const file = photo as { id?: string };
+        if (file.id) return assetUrl(String(file.id));
+    }
+
+    return null;
+};
+
+export const uploadProfilePhoto = async (userId: string | number, localUri: string) => {
+    const base = getApiBaseUrl();
+    if (!base || !ADMIN_TOKEN) {
+        throw new Error('Directus is not configured.');
+    }
+
+    const ext = localUri.split('.').pop()?.split('?')[0]?.toLowerCase() || 'jpg';
+    const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+
+    const formData = new FormData();
+    formData.append('file', {
+        uri: localUri,
+        type: mime,
+        name: `profile-${userId}.${ext}`,
+    } as unknown as Blob);
+
+    const response = await fetch(`${base}/files`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${ADMIN_TOKEN}` },
+        body: formData,
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        throw new Error(payload?.errors?.[0]?.message || 'Could not upload photo.');
+    }
+
+    const fileId = payload?.data?.id;
+    if (!fileId) throw new Error('Upload succeeded but file id was missing.');
+
+    try {
+        await api.patch(`/items/app_users/${userId}`, { profile_photo: fileId });
+    } catch (error: any) {
+        throw new Error(
+            error?.response?.data?.errors?.[0]?.message ||
+                'Photo uploaded but could not link to profile. Run: npm run setup-directus-fields'
+        );
+    }
+
+    return { fileId: String(fileId), url: resolveProfilePhotoUrl(fileId) };
+};
+
+export const clearProfilePhoto = async (userId: string | number) => {
+    await api.patch(`/items/app_users/${userId}`, { profile_photo: null });
 };
 
 export const canOfferRides = (session: {
@@ -448,8 +542,14 @@ export const assertPhoneAvailable = async (phone: string, forUserId?: string) =>
     }
 };
 
-export const resolveOwnerInfo = async (value?: string) => {
-    if (!value) return { name: 'Owner', gender: undefined as string | undefined };
+export type OwnerInfo = {
+    name: string;
+    gender?: string;
+    photoUrl?: string | null;
+};
+
+export const resolveOwnerInfo = async (value?: string): Promise<OwnerInfo> => {
+    if (!value) return { name: 'Owner', gender: undefined, photoUrl: null };
     const normalized = normalizePhone(value);
     if (normalized.length === 10) {
         const user = await findUserByPhone(normalized);
@@ -457,11 +557,12 @@ export const resolveOwnerInfo = async (value?: string) => {
             return {
                 name: getDisplayName(user.name) || 'Owner',
                 gender: user.gender as string | undefined,
+                photoUrl: resolveProfilePhotoUrl(user.profile_photo),
             };
         }
-        return { name: 'Owner', gender: undefined };
+        return { name: 'Owner', gender: undefined, photoUrl: null };
     }
-    return { name: value, gender: undefined };
+    return { name: value, gender: undefined, photoUrl: null };
 };
 
 export const createUser = async (phone: string, name: string) => {
@@ -1069,7 +1170,7 @@ export const getUserBookings = async (phone: string) => {
             params: {
                 ...params,
                 fields:
-                    'id,ride_id,total_price,seats_booked,payment_status,status,date_created,rider_name,rider_phone',
+                    'id,ride_id,ride_id.from_location,ride_id.to_location,ride_id.driver_name,total_price,seats_booked,payment_status,status,date_created,rider_name,rider_phone',
             },
         });
         return filterActiveBookings(response.data?.data || []);
