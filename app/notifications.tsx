@@ -2,7 +2,7 @@ import { useRouter } from 'expo-router';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ProfileNavButton from './components/ProfileNavButton';
-import { markAllNotificationsRead, markNotificationRead } from './config/api';
+import { markAllNotificationsRead, markNotificationRead, parseNotificationReference } from './config/api';
 import { getSession } from './config/session';
 import { useNotifications } from '@/hooks/use-notifications';
 
@@ -16,10 +16,42 @@ export default function NotificationsScreen() {
             await markNotificationRead(notification.id);
             refresh();
         }
-        if (notification.bookingId) {
+        const ref = parseNotificationReference(notification.bookingId);
+        if (ref?.type === 'pickup_request') {
+            router.push({
+                pathname: '/pickup-request',
+                params: { requestId: ref.id },
+            });
+            return;
+        }
+        if (ref?.type === 'ride_live') {
+            router.push({
+                pathname: '/live-ride',
+                params: { rideId: ref.id, role: 'rider' },
+            });
+            return;
+        }
+        if (
+            notification.title === 'Ride confirmed' ||
+            notification.title === 'Pickup request accepted'
+        ) {
             router.push({
                 pathname: '/booking',
-                params: { viewOnly: 'true', bookingId: notification.bookingId },
+                params: { viewOnly: 'true', bookingId: ref?.id || '' },
+            });
+            return;
+        }
+        if (notification.title === 'Ride started' && ref?.id) {
+            router.push({
+                pathname: '/live-ride',
+                params: { rideId: ref.id, role: 'rider' },
+            });
+            return;
+        }
+        if (ref?.type === 'booking_or_ride' && ref.id) {
+            router.push({
+                pathname: '/booking',
+                params: { viewOnly: 'true', bookingId: ref.id },
             });
         }
     };

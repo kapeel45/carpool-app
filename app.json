@@ -8,7 +8,10 @@
     "scheme": "carpoolapp",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Allow CarpoolApp to show your location on the live ride map."
+      }
     },
     "android": {
       "config": {
@@ -48,6 +51,13 @@
           "photosPermission": "Allow CarpoolApp to access your photos to set a profile picture.",
           "cameraPermission": "Allow CarpoolApp to use your camera for a profile selfie.",
           "microphonePermission": false
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow CarpoolApp to share your location with riders during an active ride.",
+          "locationWhenInUsePermission": "Allow CarpoolApp to show your location on the live ride map."
         }
       ]
     ],

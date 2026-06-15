@@ -13,6 +13,7 @@ import {
     getBookingById,
     getRideById,
     isCancelledBooking,
+    markBookingPaid,
     normalizePhone,
     resolveOwnerInfo,
     resolveRelationId,
@@ -295,6 +296,21 @@ export default function BookingScreen() {
         }
     };
 
+    const handlePay = async () => {
+        const id = activeBookingId || bookingId;
+        if (!id) return;
+        try {
+            await markBookingPaid(id);
+            setDetails((prev) => (prev ? { ...prev, paymentStatus: 'paid' } : prev));
+            if (loadedBooking) {
+                setLoadedBooking({ ...loadedBooking, payment_status: 'paid' });
+            }
+            Alert.alert('Payment complete', `₹${totalPrice} marked as paid. Thank you!`);
+        } catch (error: any) {
+            Alert.alert('Error', error?.message || 'Could not record payment.');
+        }
+    };
+
     const displayTime = details?.time ? formatRideTime(details.time) : 'Time TBD';
     const paymentStatusLabel =
         details?.paymentStatus === 'paid'
@@ -312,6 +328,12 @@ export default function BookingScreen() {
         !bookingCancelled &&
         (!loadedBooking || !isCancelledBooking(loadedBooking)) &&
         (viewOnly || bookingDone || isOwnerViewer);
+    const showPayButton =
+        Boolean(activeBookingId || bookingId) &&
+        !isOwnerViewer &&
+        !bookingCancelled &&
+        (details?.paymentStatus || 'pending').toLowerCase() === 'pending' &&
+        (viewOnly || bookingDone);
 
     return (
         <View style={styles.container}>
@@ -458,6 +480,12 @@ export default function BookingScreen() {
                         </View>
                     </View>
 
+                    {showPayButton ? (
+                        <TouchableOpacity style={styles.payButton} onPress={handlePay}>
+                            <Text style={styles.payButtonText}>Pay ₹{totalPrice}</Text>
+                        </TouchableOpacity>
+                    ) : null}
+
                     {showCancelButton ? (
                         <TouchableOpacity style={styles.cancelButton} onPress={handleCancel}>
                             <Text style={styles.cancelButtonText}>
@@ -573,6 +601,14 @@ const styles = StyleSheet.create({
     paymentLabel: { fontSize: 14, color: '#666' },
     paymentPrice: { fontSize: 16, fontWeight: 'bold', color: '#333' },
     paymentStatus: { fontSize: 14, fontWeight: 'bold', color: '#f59e0b' },
+    payButton: {
+        backgroundColor: '#34a853',
+        borderRadius: 12,
+        padding: 16,
+        alignItems: 'center',
+        marginBottom: 12,
+    },
+    payButtonText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
     cancelButton: {
         borderWidth: 1.5,
         borderColor: '#d32f2f',

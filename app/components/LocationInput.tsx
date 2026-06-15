@@ -1,12 +1,21 @@
-import React, { useEffect, useRef } from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useCallback, useEffect, useRef } from 'react';
+import { StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { GooglePlacesAutocomplete } from 'react-native-google-places-autocomplete';
+import type { LocationSelection } from '../config/geo';
 
 const GOOGLE_MAPS_API_KEY = 'AIzaSyBhjfn1ZfqiR4zSGT8clhe2Yc-X8FYifF8';
 
+const placeLabel = (data: { description: string; structured_formatting?: { main_text?: string; secondary_text?: string } }) => {
+    const main = data.structured_formatting?.main_text?.trim();
+    const secondary = data.structured_formatting?.secondary_text?.trim();
+    if (main && secondary) return `${main}, ${secondary}`;
+    if (main) return main;
+    return data.description;
+};
+
 interface LocationInputProps {
     placeholder: string;
-    onLocationSelect: (address: string) => void;
+    onLocationSelect: (selection: LocationSelection) => void;
     variant?: 'pickup' | 'dropoff';
     initialValue?: string;
 }
@@ -18,16 +27,24 @@ export default function LocationInput({
     initialValue,
 }: LocationInputProps) {
     const ref = useRef<any>(null);
+    const textInputRef = useRef<TextInput>(null);
+
+    const scrollInputToStart = useCallback(() => {
+        requestAnimationFrame(() => {
+            textInputRef.current?.setNativeProps({ selection: { start: 0, end: 0 } });
+        });
+    }, []);
 
     useEffect(() => {
         if (initialValue && ref.current?.setAddressText) {
             ref.current.setAddressText(initialValue);
+            setTimeout(scrollInputToStart, 0);
         }
-    }, [initialValue]);
+    }, [initialValue, scrollInputToStart]);
 
     const handleClear = () => {
         ref.current?.clear();
-        onLocationSelect('');
+        onLocationSelect({ address: '', coords: null });
     };
 
     return (
@@ -35,8 +52,22 @@ export default function LocationInput({
             <GooglePlacesAutocomplete
                 ref={ref}
                 placeholder={placeholder}
-                onPress={(data) => {
-                    onLocationSelect(data.description);
+                onPress={(data, details = null) => {
+                    const lat = details?.geometry?.location?.lat;
+                    const lng = details?.geometry?.location?.lng;
+                    const address = placeLabel(data);
+                    const selection: LocationSelection = {
+                        address,
+                        coords:
+                            typeof lat === 'number' && typeof lng === 'number'
+                                ? { latitude: lat, longitude: lng }
+                                : null,
+                    };
+                    onLocationSelect(selection);
+                    if (ref.current?.setAddressText) {
+                        ref.current.setAddressText(address);
+                    }
+                    setTimeout(scrollInputToStart, 50);
                 }}
                 query={{
                     key: GOOGLE_MAPS_API_KEY,
@@ -74,6 +105,8 @@ export default function LocationInput({
                         color: '#333',
                         height: 48,
                         margin: 0,
+                        textAlign: 'left',
+                        textAlignVertical: 'center',
                     },
                     listView: {
                         backgroundColor: '#fff',
@@ -106,7 +139,9 @@ export default function LocationInput({
                             <View
                                 style={[
                                     styles.indicator,
-                                    variant === 'pickup' ? styles.pickup : styles.dropoff,
+                                    variant === 'pickup'
+                                        ? styles.pickup
+                                        : styles.dropoff,
                                 ]}
                             />
                         </View>
@@ -117,7 +152,25 @@ export default function LocationInput({
                         <Text style={styles.clearText}>✕</Text>
                     </TouchableOpacity>
                 )}
-                fetchDetails={false}
+                textInputProps={{
+                    ref: textInputRef,
+                    multiline: false,
+                    textAlign: 'left',
+                    onFocus: scrollInputToStart,
+                }}
+                renderRow={(data) => (
+                    <View style={styles.suggestionRow}>
+                        <Text style={styles.suggestionMain} numberOfLines={1}>
+                            {data.structured_formatting?.main_text || data.description}
+                        </Text>
+                        {data.structured_formatting?.secondary_text ? (
+                            <Text style={styles.suggestionSecondary} numberOfLines={1}>
+                                {data.structured_formatting.secondary_text}
+                            </Text>
+                        ) : null}
+                    </View>
+                )}
+                fetchDetails
                 enablePoweredByContainer={false}
                 debounce={300}
                 minLength={2}
@@ -170,5 +223,23 @@ const styles = StyleSheet.create({
         color: '#666',
         fontWeight: 'bold',
         lineHeight: 12,
+    },
+    suggestionRow: {
+        padding: 14,
+        borderBottomWidth: 1,
+        borderBottomColor: '#f0f0f0',
+        backgroundColor: '#fff',
+    },
+    suggestionMain: {
+        fontSize: 15,
+        fontWeight: '600',
+        color: '#222',
+        textAlign: 'left',
+    },
+    suggestionSecondary: {
+        fontSize: 13,
+        color: '#666',
+        marginTop: 2,
+        textAlign: 'left',
     },
 });

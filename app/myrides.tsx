@@ -52,6 +52,7 @@ type RideItem = {
     pricePerSeat: number;
     seats: number;
     status: 'confirmed' | 'completed';
+    tripStatus?: string;
     rideId?: string;
     bookingId?: string;
     canEdit?: boolean;
@@ -212,6 +213,7 @@ export default function MyRidesScreen() {
                             pricePerSeat: Number(ride?.price_per_seat) || Number(booking.total_price) || 0,
                             seats: Math.max(1, Number(booking.seats_booked) || 1),
                             status: isUpcoming ? 'confirmed' : 'completed',
+                            tripStatus: String(ride?.trip_status || 'scheduled'),
                             rideId: rideIdStr || ride?.id?.toString(),
                             bookingId: String(booking.id),
                         });
@@ -238,6 +240,7 @@ export default function MyRidesScreen() {
                             pricePerSeat,
                             seats,
                             status: isUpcoming ? 'confirmed' : 'completed',
+                            tripStatus: String(ride.trip_status || 'scheduled'),
                             rideId: rideIdStr,
                             canEdit: isUpcoming && rideIdStr.length > 0 && !ridesWithBookings.has(rideIdStr),
                             riderBookings,
@@ -309,6 +312,24 @@ export default function MyRidesScreen() {
                     >
                         <Text style={styles.viewButtonText}>View Booking</Text>
                     </TouchableOpacity>
+                    {ride.status === 'confirmed' && ride.rideId ? (
+                        <TouchableOpacity
+                            style={styles.liveButton}
+                            onPress={() =>
+                                router.push({
+                                    pathname: '/live-ride',
+                                    params: {
+                                        rideId: ride.rideId || '',
+                                        role: 'rider',
+                                    },
+                                })
+                            }
+                        >
+                            <Text style={styles.liveButtonText}>
+                                {ride.tripStatus === 'in_progress' ? 'Live map' : 'Track ride'}
+                            </Text>
+                        </TouchableOpacity>
+                    ) : null}
                     {ride.status === 'confirmed' && ride.bookingId ? (
                         <TouchableOpacity
                             style={[
@@ -360,6 +381,27 @@ export default function MyRidesScreen() {
                         </View>
                     ))}
                 </View>
+            ) : null}
+
+            {ride.type === 'owner' && ride.status === 'confirmed' && ride.rideId && ride.riderBookings?.length ? (
+                <TouchableOpacity
+                    style={styles.liveButtonFull}
+                    onPress={() =>
+                        router.push({
+                            pathname: '/live-ride',
+                            params: {
+                                rideId: ride.rideId || '',
+                                role: 'owner',
+                            },
+                        })
+                    }
+                >
+                    <Text style={styles.liveButtonText}>
+                        {ride.tripStatus === 'in_progress'
+                            ? '🟢 Live ride — open map'
+                            : 'Start / manage live ride'}
+                    </Text>
+                </TouchableOpacity>
             ) : null}
 
             {ride.type === 'owner' && ride.canEdit && ride.rideId ? (
@@ -519,6 +561,21 @@ const styles = StyleSheet.create({
         flex: 1,
     },
     viewButtonText: { color: '#fff', fontWeight: '600', fontSize: 15 },
+    liveButton: {
+        backgroundColor: '#34a853',
+        borderRadius: 10,
+        padding: 12,
+        alignItems: 'center',
+        minWidth: 96,
+    },
+    liveButtonFull: {
+        backgroundColor: '#34a853',
+        borderRadius: 10,
+        padding: 14,
+        alignItems: 'center',
+        marginTop: 12,
+    },
+    liveButtonText: { color: '#fff', fontWeight: '700', fontSize: 14 },
     cancelButton: {
         borderWidth: 1.5,
         borderColor: '#d32f2f',

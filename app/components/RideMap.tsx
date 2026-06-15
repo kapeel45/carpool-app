@@ -1,36 +1,19 @@
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import { geocodeAddress, type Coordinates } from '../config/geo';
 
 interface RideMapProps {
     fromLocation: string;
     toLocation: string;
+    fromCoords?: Coordinates | null;
+    toCoords?: Coordinates | null;
     viaPoints?: string[];
     height?: number;
 }
 
-interface Coordinates {
-    latitude: number;
-    longitude: number;
-}
-
-const GOOGLE_MAPS_API_KEY = 'AIzaSyBhjfn1ZfqiR4zSGT8clhe2Yc-X8FYifF8';
-
-const geocodeLocation = async (location: string): Promise<Coordinates | null> => {
-    try {
-        const response = await fetch(
-            `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(location + ', Pune, India')}&key=${GOOGLE_MAPS_API_KEY}`
-        );
-        const data = await response.json();
-        if (data.results && data.results.length > 0) {
-            const { lat, lng } = data.results[0].geometry.location;
-            return { latitude: lat, longitude: lng };
-        }
-        return null;
-    } catch (error) {
-        return null;
-    }
-};
+const GOOGLE_MAPS_API_KEY =
+    process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyBhjfn1ZfqiR4zSGT8clhe2Yc-X8FYifF8';
 
 const getRouteCoordinates = async (
     from: Coordinates,
@@ -87,7 +70,14 @@ const decodePolyline = (encoded: string): Coordinates[] => {
     return points;
 };
 
-export default function RideMap({ fromLocation, toLocation, viaPoints = [], height = 200 }: RideMapProps) {
+export default function RideMap({
+    fromLocation,
+    toLocation,
+    fromCoords: fromCoordsProp,
+    toCoords: toCoordsProp,
+    viaPoints = [],
+    height = 200,
+}: RideMapProps) {
     const [fromCoords, setFromCoords] = useState<Coordinates | null>(null);
     const [toCoords, setToCoords] = useState<Coordinates | null>(null);
     const [routeCoords, setRouteCoords] = useState<Coordinates[]>([]);
@@ -96,27 +86,37 @@ export default function RideMap({ fromLocation, toLocation, viaPoints = [], heig
 
     useEffect(() => {
         const loadMap = async () => {
+            if (!fromLocation || !toLocation) {
+                setLoading(false);
+                return;
+            }
+
             setLoading(true);
-            const from = await geocodeLocation(fromLocation);
-            const to = await geocodeLocation(toLocation);
+            let from = fromCoordsProp || null;
+            let to = toCoordsProp || null;
+            if (!from) from = await geocodeAddress(fromLocation);
+            if (!to) to = await geocodeAddress(toLocation);
+
             if (from && to) {
                 setFromCoords(from);
                 setToCoords(to);
-                // Geocode via points
                 const viaCoordinates: Coordinates[] = [];
                 for (const point of viaPoints) {
-                    const coords = await geocodeLocation(point);
+                    const coords = await geocodeAddress(point);
                     if (coords) viaCoordinates.push(coords);
                 }
                 setViaCoords(viaCoordinates);
-
-                const route = await getRouteCoordinates(from, to, viaCoordinates);
-                setRouteCoords(route);
+                setRouteCoords(await getRouteCoordinates(from, to, viaCoordinates));
+            } else {
+                setFromCoords(from);
+                setToCoords(to);
+                setViaCoords([]);
+                setRouteCoords([]);
             }
             setLoading(false);
         };
-        if (fromLocation && toLocation) loadMap();
-    }, [fromLocation, toLocation]);
+        loadMap();
+    }, [fromLocation, toLocation, fromCoordsProp, toCoordsProp, viaPoints.join('|')]);
 
     if (loading) {
         return (

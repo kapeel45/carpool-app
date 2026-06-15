@@ -43,7 +43,7 @@ Human-readable record of what the app does today. Use this when adding or changi
 | Screen | File | Purpose |
 |--------|------|---------|
 | Login | `app/login.tsx` | Phone + MPIN auth, signup |
-| Search | `app/search.tsx` | Find rides, book, cancel from list |
+| Search | `app/search.tsx` | Find rides (exact + nearby), pickup requests, book, cancel from list |
 | Offer | `app/offer.tsx` | Create or edit a ride offer |
 | Booking | `app/booking.tsx` | Confirm booking or view/cancel existing |
 | My Rides | `app/myrides.tsx` | Rider bookings + owner rides + cancel |
@@ -139,12 +139,15 @@ Profile syncs from server on focus via `refreshSessionFromServer()`.
 
 ### Search behavior
 
-- Pickup/drop via **Google Places** (`LocationInput` component).
+- Pickup/drop via **Google Places** (`LocationInput` component). Place selection returns address + coordinates when available.
 - Lists active rides from Directus (`getRides`), filtered by:
-  - Route match (from/to)
   - Departure in the future (`isRideSearchable`)
   - Has available seats
   - Not user's own offer (`filterRidesForFind`)
+- Results split by `partitionRideSearchResults()` in `app/config/geo.ts`:
+  - **Exact route matches** — pickup and drop text overlap your search.
+  - **Nearby rides (within 3 mi)** — ride pickup is within `NEARBY_PICKUP_RADIUS_MILES` (3) of your pickup and destination matches (text or within 5 mi).
+- **Request pickup** sends in-app notifications to the ride owner and a confirmation to the rider (`requestNearbyPickup`).
 - List auto-refreshes every **60s** (`FIND_RIDE_REFRESH_MS`).
 
 ### Booking from search
@@ -171,6 +174,7 @@ Profile syncs from server on focus via `refreshSessionFromServer()`.
 
 - Requires logged-in user passing `canOfferRides()`.
 - Fields: from, to, departure time, price per seat, available seats.
+- Saves `from_lat`, `from_lng`, `to_lat`, `to_lng` from Places coords (geocode fallback if missing).
 - Optional **suggested price** via Google Distance Matrix (`calculateSuggestedPrice`).
 - Creates record in `rides` with `driver_name` = owner's **phone**.
 
@@ -329,6 +333,7 @@ On **booking cancellation**, the **other party** is notified:
 
 - `driver_name` — owner phone (10 digits)
 - `from_location`, `to_location` — address strings
+- `from_lat`, `from_lng`, `to_lat`, `to_lng` — coordinates for nearby search (add via `npm run setup-ride-geo`)
 - `departure_time` — ISO datetime (UTC parsing via `parseDirectusDatetime`)
 - `price_per_seat`, `available_seats`
 - `status` — typically `active`
@@ -360,7 +365,7 @@ Central axios client with `EXPO_PUBLIC_DIRECTUS_TOKEN`. Grouped exports:
 | Rides | `getRides`, `createRide`, `updateRide`, `getRideById`, `filterRidesForFind`, `isRideSearchable` |
 | Bookings | `createBooking`, `cancelBooking`, `getBookingById`, `getUserBookings`, `getBookingsForRide`, `getBookingsForOwnerRides`, `isCancelledBooking` |
 | Seats | `getAvailableSeats`, `adjustRideAvailableSeats`, `countActiveBookingsForRide`, `getRideIdsWithActiveBookings` |
-| Notifications | `createAppNotification`, `getNotificationsForUser`, `getUnreadNotificationCount`, `markNotificationRead`, `markAllNotificationsRead`, `isNotificationRead` |
+| Notifications | `createAppNotification`, `getNotificationsForUser`, `getUnreadNotificationCount`, `markNotificationRead`, `markAllNotificationsRead`, `isNotificationRead`, `requestNearbyPickup` |
 | Stats | `getUserStats` |
 | Display | `normalizePhone`, `resolveDisplayName`, `getDisplayName`, `resolveRelationId` |
 | Maps / pricing | `calculateSuggestedPrice` |
@@ -371,14 +376,19 @@ Central axios client with `EXPO_PUBLIC_DIRECTUS_TOKEN`. Grouped exports:
 
 | File | Purpose |
 |------|---------|
-| `app/components/LocationInput.tsx` | Google Places autocomplete for pickup/drop |
+| `app/components/LocationInput.tsx` | Google Places autocomplete for pickup/drop (returns coords) |
 | `app/components/RideMap.tsx` | Route map (native) |
 | `app/components/RideMap.web.tsx` | Web fallback |
 | `app/components/SeatSelector.tsx` | +/- seat picker |
+| `app/components/RideOwnerRow.tsx` | Owner avatar + name on ride cards |
 | `app/components/ProfileAvatarPicker.tsx` | Profile photo: camera, gallery, remove |
+| `app/components/ProfileAvatar.tsx` | Circular profile photo display |
+| `app/components/ProfileNavButton.tsx` | Header profile shortcut |
 | `hooks/use-user-stats.ts` | Stats with focus refresh |
 | `hooks/use-notifications.ts` | Notification list + unread count |
+| `hooks/use-session-profile.ts` | Refreshes profile photo on screen focus |
 | `app/config/session.ts` | AsyncStorage session |
+| `app/config/geo.ts` | Geocode, distance, nearby ride partition |
 | `app/config/work-email.ts` | Work email domain rules |
 | `app/config/gender.ts` | Gender option constants |
 
@@ -392,6 +402,7 @@ Run from project root after copying `.env.example` → `.env`.
 |--------|---------|-------------|
 | Setup user fields | `npm run setup-directus-fields` | After fresh Directus or missing `app_users` columns (gender, car_*) |
 | Setup notifications | `npm run setup-notifications` | Before using in-app notifications / booking `status` field |
+| Setup ride geo fields | `npm run setup-ride-geo` | Adds `from_lat`/`from_lng`/`to_lat`/`to_lng` on `rides` for nearby search |
 | Clear all data | `npm run clear-directus` | Wipe bookings, rides, users, OTPs; re-seed fuel (keeps schema) |
 | Fix duplicate phones | `npm run fix-duplicate-phones` | Data cleanup |
 | Fix duplicate emails | `npm run fix-duplicate-emails` | Data cleanup |
@@ -404,6 +415,7 @@ npm install
 cp .env.example .env   # fill in Directus URL + token
 npm run setup-directus-fields
 npm run setup-notifications
+npm run setup-ride-geo
 npx expo start
 ```
 

@@ -784,6 +784,13 @@ export const createBooking = async (bookingData: any) => {
     return booking;
 };
 
+export const markBookingPaid = async (bookingId: string) => {
+    const response = await api.patch(`/items/bookings/${bookingId}`, {
+        payment_status: 'paid',
+    });
+    return response.data?.data;
+};
+
 export const isCancelledBooking = (booking: {
     payment_status?: string | null;
     status?: string | null;
@@ -806,6 +813,8 @@ const ACTIVE_BOOKING_QUERY = {
 
 export const isNotificationRead = (value: unknown): boolean =>
     value === true || value === 1 || value === '1' || String(value).toLowerCase() === 'true';
+
+export type LocationCoords = { lat: number; lng: number };
 
 export const createAppNotification = async (
     recipientPhone: string,
@@ -837,6 +846,332 @@ export const createAppNotification = async (
         }
         return null;
     }
+};
+
+export const requestNearbyPickup = async (params: {
+    rideId: string;
+    rideOwnerPhone: string;
+    riderPhone: string;
+    riderName: string;
+    riderPickup: string;
+    pickupDistanceMiles: number;
+    seatsBooked?: number;
+    totalPrice?: number;
+}) => {
+    const ownerPhone = normalizePhone(params.rideOwnerPhone);
+    if (ownerPhone.length !== 10) {
+        throw new Error('Ride owner phone not available.');
+    }
+
+    const request = await createPickupRequest({
+        rideId: params.rideId,
+        ownerPhone: params.rideOwnerPhone,
+        riderPhone: params.riderPhone,
+        riderName: params.riderName,
+        riderPickup: params.riderPickup,
+        pickupDistanceMiles: params.pickupDistanceMiles,
+        seatsBooked: params.seatsBooked,
+        totalPrice: params.totalPrice,
+    });
+
+    const riderPhone = normalizePhone(params.riderPhone);
+    const requestId = String(request.id);
+    const distanceLabel =
+        params.pickupDistanceMiles < 0.1
+            ? 'very close'
+            : `${params.pickupDistanceMiles.toFixed(1)} mi away`;
+
+    const message =
+        `${params.riderName || 'A rider'} (${distanceLabel}) asked if you can pick them up nearby. ` +
+        `Their location: ${params.riderPickup}. Open the request to accept or reject.`;
+
+    await createAppNotification(
+        ownerPhone,
+        'Nearby pickup request',
+        message,
+        `pickup_request:${requestId}`
+    );
+
+    if (riderPhone.length === 10) {
+        await createAppNotification(
+            riderPhone,
+            'Pickup request sent',
+            `Your request was sent to the ride owner. They will review your pickup at: ${params.riderPickup}.`,
+            `pickup_request:${requestId}`
+        );
+    }
+
+    return request;
+};
+
+export type PickupRequestRecord = {
+    id: string | number;
+    ride_id: string;
+    owner_phone: string;
+    rider_phone: string;
+    rider_name?: string | null;
+    rider_pickup?: string | null;
+    pickup_distance_miles?: number | null;
+    seats_booked?: number | null;
+    total_price?: number | null;
+    booking_id?: string | null;
+    status?: string | null;
+};
+
+export const createPickupRequest = async (params: {
+    rideId: string;
+    ownerPhone: string;
+    riderPhone: string;
+    riderName: string;
+    riderPickup: string;
+    pickupDistanceMiles: number;
+    seatsBooked?: number;
+    totalPrice?: number;
+}) => {
+    const response = await api.post('/items/pickup_requests', {
+        ride_id: String(params.rideId),
+        owner_phone: normalizePhone(params.ownerPhone),
+        rider_phone: normalizePhone(params.riderPhone),
+        rider_name: params.riderName,
+        rider_pickup: params.riderPickup,
+        junction_point: params.riderPickup,
+        junction_lat: null,
+        junction_lng: null,
+        pickup_distance_miles: params.pickupDistanceMiles,
+        seats_booked: Math.max(1, params.seatsBooked ?? 1),
+        total_price: params.totalPrice ?? 0,
+        status: 'pending',
+    });
+    const record = response.data?.data;
+    if (!record?.id) {
+        throw new Error('Could not create pickup request.');
+    }
+    return record as PickupRequestRecord;
+};
+
+export const getPickupRequestById = async (id: string): Promise<PickupRequestRecord | null> => {
+    try {
+        const response = await api.get(`/items/pickup_requests/${id}`);
+        return response.data?.data || null;
+    } catch {
+        return null;
+    }
+};
+
+export const getPendingPickupRequestsForOwner = async (phone: string) => {
+    const normalized = normalizePhone(phone);
+    if (normalized.length !== 10) return [];
+
+    try {
+        const response = await api.get('/items/pickup_requests', {
+            params: {
+                'filter[owner_phone][_eq]': normalized,
+                'filter[status][_eq]': 'pending',
+                sort: '-id',
+                limit: 50,
+                fields: '*',
+            },
+        });
+        return (response.data?.data || []) as PickupRequestRecord[];
+    } catch (error) {
+        console.warn('getPendingPickupRequestsForOwner failed:', error);
+        return [];
+    }
+};
+
+export const getPickupRequestsForRider = async (phone: string, status = 'pending') => {
+    const normalized = normalizePhone(phone);
+    if (normalized.length !== 10) return [];
+
+    try {
+        const response = await api.get('/items/pickup_requests', {
+            params: {
+                'filter[rider_phone][_eq]': normalized,
+                'filter[status][_eq]': status,
+                sort: '-id',
+                limit: 50,
+                fields: '*',
+            },
+        });
+        return (response.data?.data || []) as PickupRequestRecord[];
+    } catch (error) {
+        console.warn('getPickupRequestsForRider failed:', error);
+        return [];
+    }
+};
+
+export const acceptPickupRequest = async (requestId: string, ownerPhone: string) => {
+    const request = await getPickupRequestById(requestId);
+    if (!request) throw new Error('Pickup request not found.');
+    if (normalizePhone(request.owner_phone) !== normalizePhone(ownerPhone)) {
+        throw new Error('Not allowed to accept this request.');
+    }
+    if (request.status !== 'pending') {
+        throw new Error('This request was already handled.');
+    }
+
+    const ride = await getRideById(String(request.ride_id));
+    if (!ride) throw new Error('Ride not found.');
+
+    const seatsBooked = Math.max(1, Number(request.seats_booked) || 1);
+    const pricePerSeat = Number(ride.price_per_seat) || 0;
+    const totalPrice = Number(request.total_price) || pricePerSeat * seatsBooked;
+
+    const booking = await createBooking({
+        ride_id: String(request.ride_id),
+        rider_name: request.rider_name || request.rider_phone,
+        rider_phone: request.rider_phone,
+        seats_booked: seatsBooked,
+        total_price: totalPrice,
+        payment_status: 'pending',
+    });
+
+    await api.patch(`/items/pickup_requests/${requestId}`, {
+        status: 'accepted',
+        booking_id: String(booking.id),
+    });
+
+    const riderPhone = normalizePhone(request.rider_phone);
+    if (riderPhone.length === 10) {
+        await createAppNotification(
+            riderPhone,
+            'Ride confirmed',
+            `Your ride was booked! Pickup at: ${request.rider_pickup || 'your location'}. Tap to pay ₹${totalPrice}.`,
+            String(booking.id)
+        );
+    }
+
+    return { request, booking };
+};
+
+export const rejectPickupRequest = async (requestId: string, ownerPhone: string) => {
+    const request = await getPickupRequestById(requestId);
+    if (!request) throw new Error('Pickup request not found.');
+    if (normalizePhone(request.owner_phone) !== normalizePhone(ownerPhone)) {
+        throw new Error('Not allowed to reject this request.');
+    }
+    if (request.status !== 'pending') {
+        throw new Error('This request was already handled.');
+    }
+
+    await api.patch(`/items/pickup_requests/${requestId}`, { status: 'rejected' });
+
+    const riderPhone = normalizePhone(request.rider_phone);
+    if (riderPhone.length === 10) {
+        await createAppNotification(
+            riderPhone,
+            'Pickup request declined',
+            `The ride owner could not pick you up. Try another nearby ride.`,
+            String(request.ride_id)
+        );
+    }
+
+    return request;
+};
+
+export const cancelPickupRequest = async (requestId: string, riderPhone: string) => {
+    const request = await getPickupRequestById(requestId);
+    if (!request) throw new Error('Pickup request not found.');
+    if (normalizePhone(request.rider_phone) !== normalizePhone(riderPhone)) {
+        throw new Error('Not allowed to cancel this request.');
+    }
+    if (request.status !== 'pending') {
+        throw new Error('This request can no longer be cancelled.');
+    }
+
+    await api.patch(`/items/pickup_requests/${requestId}`, { status: 'cancelled' });
+
+    const ownerPhone = normalizePhone(request.owner_phone);
+    if (ownerPhone.length === 10) {
+        await createAppNotification(
+            ownerPhone,
+            'Pickup request cancelled',
+            `${request.rider_name || 'A rider'} cancelled their nearby pickup request.`,
+            String(request.ride_id)
+        );
+    }
+
+    return request;
+};
+
+export const startRide = async (rideId: string, ownerPhone: string) => {
+    const ride = await getRideById(rideId);
+    if (!ride) throw new Error('Ride not found.');
+    if (normalizePhone(ride.driver_name || '') !== normalizePhone(ownerPhone)) {
+        throw new Error('Only the ride owner can start the ride.');
+    }
+
+    await api.patch(`/items/rides/${rideId}`, {
+        trip_status: 'in_progress',
+        driver_location_updated_at: new Date().toISOString(),
+    });
+
+    const bookings = await getBookingsForRide(rideId);
+    for (const booking of filterActiveBookings(bookings)) {
+        const riderPhone = normalizePhone(String((booking as { rider_phone?: string }).rider_phone || ''));
+        if (riderPhone.length !== 10) continue;
+        await createAppNotification(
+            riderPhone,
+            'Ride started',
+            `Your driver has started the ride. Open live tracking to see their location.`,
+            `ride_live:${rideId}`
+        );
+    }
+
+    return ride;
+};
+
+export const completeRide = async (rideId: string, ownerPhone: string) => {
+    const ride = await getRideById(rideId);
+    if (!ride) throw new Error('Ride not found.');
+    if (normalizePhone(ride.driver_name || '') !== normalizePhone(ownerPhone)) {
+        throw new Error('Only the ride owner can end the ride.');
+    }
+
+    await api.patch(`/items/rides/${rideId}`, {
+        trip_status: 'completed',
+        driver_lat: null,
+        driver_lng: null,
+        driver_location_updated_at: new Date().toISOString(),
+    });
+
+    return ride;
+};
+
+export const updateDriverLocation = async (rideId: string, lat: number, lng: number) => {
+    await api.patch(`/items/rides/${rideId}`, {
+        driver_lat: lat,
+        driver_lng: lng,
+        driver_location_updated_at: new Date().toISOString(),
+    });
+};
+
+export const getRideLiveTracking = async (rideId: string) => {
+    try {
+        const response = await api.get(`/items/rides/${rideId}`, {
+            params: {
+                fields:
+                    'id,from_location,to_location,from_lat,from_lng,to_lat,to_lng,trip_status,driver_lat,driver_lng,driver_location_updated_at,driver_name,departure_time',
+            },
+        });
+        return response.data?.data || null;
+    } catch {
+        return null;
+    }
+};
+
+export const parseNotificationReference = (bookingId?: string | null) => {
+    const raw = String(bookingId || '');
+    if (raw.startsWith('pickup_request:')) {
+        return { type: 'pickup_request' as const, id: raw.replace('pickup_request:', '') };
+    }
+    if (raw.startsWith('ride_live:')) {
+        return { type: 'ride_live' as const, id: raw.replace('ride_live:', '') };
+    }
+    if (raw) {
+        return { type: 'booking_or_ride' as const, id: raw };
+    }
+    return null;
 };
 
 export const getNotificationsForUser = async (phone: string, includeRead = true) => {
@@ -1036,6 +1371,22 @@ export const cancelBooking = async (bookingId: string, cancelledByPhone?: string
         console.warn('Cancellation notification failed:', error);
     }
 
+    try {
+        const linked = await api.get('/items/pickup_requests', {
+            params: {
+                'filter[booking_id][_eq]': id,
+                limit: 1,
+                fields: 'id,status',
+            },
+        });
+        const pickupRequest = linked.data?.data?.[0];
+        if (pickupRequest?.id && pickupRequest.status === 'accepted') {
+            await api.patch(`/items/pickup_requests/${pickupRequest.id}`, { status: 'cancelled' });
+        }
+    } catch {
+        // pickup_requests collection may be missing
+    }
+
     return cancelled;
 };
 
@@ -1198,7 +1549,7 @@ export const getUserOfferedRides = async (phone: string) => {
             params: {
                 ...params,
                 fields:
-                    'id,from_location,to_location,price_per_seat,available_seats,status,departure_time,date_created,driver_name',
+                    'id,from_location,to_location,price_per_seat,available_seats,status,departure_time,date_created,driver_name,trip_status,driver_lat,driver_lng',
             },
         });
         return response.data?.data || [];

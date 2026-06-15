@@ -5,6 +5,7 @@ import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Scroll
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LocationInput from './components/LocationInput';
 import ProfileNavButton from './components/ProfileNavButton';
+import RideMap from './components/RideMap';
 import {
     calculateSuggestedPrice,
     countActiveBookingsForRide,
@@ -16,6 +17,7 @@ import {
     updateRide,
 } from './config/api';
 import { canOfferRides } from './config/api';
+import { geocodeAddress, type Coordinates } from './config/geo';
 import { getSession, refreshSessionFromServer } from './config/session';
 
 export default function OfferRideScreen() {
@@ -29,6 +31,8 @@ export default function OfferRideScreen() {
     const isEditMode = Boolean(editRideId);
     const [from, setFrom] = useState('');
     const [to, setTo] = useState('');
+    const [fromCoords, setFromCoords] = useState<Coordinates | null>(null);
+    const [toCoords, setToCoords] = useState<Coordinates | null>(null);
     const [time, setTime] = useState('');
     const [dateLabel, setDateLabel] = useState('');
     const [seats, setSeats] = useState('2');
@@ -277,13 +281,26 @@ export default function OfferRideScreen() {
 
         setLoading(true);
         try {
-            const payload = {
+            let pickupCoords = fromCoords;
+            let dropCoords = toCoords;
+            if (!pickupCoords) pickupCoords = await geocodeAddress(from);
+            if (!dropCoords) dropCoords = await geocodeAddress(to);
+
+            const payload: Record<string, unknown> = {
                 from_location: from,
                 to_location: to,
                 departure_time: departureDateTime.toISOString(),
                 available_seats: seatCount,
                 price_per_seat: pricePerSeat,
             };
+            if (pickupCoords) {
+                payload.from_lat = pickupCoords.latitude;
+                payload.from_lng = pickupCoords.longitude;
+            }
+            if (dropCoords) {
+                payload.to_lat = dropCoords.latitude;
+                payload.to_lng = dropCoords.longitude;
+            }
 
             if (isEditMode && editRideId) {
                 const bookings = await countActiveBookingsForRide(editRideId);
@@ -348,6 +365,26 @@ export default function OfferRideScreen() {
                 style={styles.flex}
             >
                 <View style={styles.locationSection}>
+                    <View style={styles.routeMapTop}>
+                        {from && to ? (
+                            <RideMap
+                                fromLocation={from}
+                                toLocation={to}
+                                fromCoords={fromCoords}
+                                toCoords={toCoords}
+                                height={180}
+                            />
+                        ) : (
+                            <View style={styles.mapPlaceholder}>
+                                <Text style={styles.mapPlaceholderIcon}>🗺️</Text>
+                                <Text style={styles.mapPlaceholderText}>Route map</Text>
+                                <Text style={styles.mapPlaceholderSub}>
+                                    Select pickup and destination below
+                                </Text>
+                            </View>
+                        )}
+                    </View>
+
                     <View style={styles.routeCard}>
                         <View style={styles.routeLine} pointerEvents="none" />
                         <View style={[styles.fieldWrap, styles.fieldWrapTop]}>
@@ -355,7 +392,10 @@ export default function OfferRideScreen() {
                                 variant="pickup"
                                 placeholder="e.g. Wakad, Pune"
                                 initialValue={from}
-                                onLocationSelect={(address) => setFrom(address)}
+                                onLocationSelect={(sel) => {
+                                    setFrom(sel.address);
+                                    setFromCoords(sel.coords || null);
+                                }}
                             />
                         </View>
                         <View style={styles.fieldWrap}>
@@ -363,7 +403,10 @@ export default function OfferRideScreen() {
                                 variant="dropoff"
                                 placeholder="e.g. Hinjewadi Phase 1"
                                 initialValue={to}
-                                onLocationSelect={(address) => setTo(address)}
+                                onLocationSelect={(sel) => {
+                                    setTo(sel.address);
+                                    setToCoords(sel.coords || null);
+                                }}
                             />
                         </View>
                     </View>
@@ -584,6 +627,27 @@ const styles = StyleSheet.create({
         width: '100%',
         position: 'relative',
     },
+    routeMapPreview: { marginTop: 16 },
+    routeMapTop: { marginBottom: 16 },
+    routeMapLabel: {
+        fontSize: 13,
+        fontWeight: '700',
+        color: '#333',
+        marginBottom: 8,
+    },
+    mapPlaceholder: {
+        height: 180,
+        backgroundColor: '#f0f5ff',
+        borderRadius: 12,
+        justifyContent: 'center',
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: '#dbeafe',
+        borderStyle: 'dashed',
+    },
+    mapPlaceholderIcon: { fontSize: 32, marginBottom: 8 },
+    mapPlaceholderText: { fontSize: 14, fontWeight: '600', color: '#1a73e8' },
+    mapPlaceholderSub: { fontSize: 12, color: '#666', marginTop: 4 },
     routeLine: {
         position: 'absolute',
         left: 16,
