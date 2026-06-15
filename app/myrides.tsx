@@ -1,9 +1,20 @@
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
+    ActivityIndicator,
+    Alert,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import NotificationBell from './components/NotificationBell';
+import {
+    cancelBooking,
+    getBookingsForOwnerRides,
     getDisplayName,
     getRideIdsWithActiveBookings,
     getRides,
@@ -16,6 +27,14 @@ import {
 } from './config/api';
 import { getSession } from './config/session';
 import { useUserStats } from '@/hooks/use-user-stats';
+
+type RiderBooking = {
+    bookingId: string;
+    riderName: string;
+    riderPhone: string;
+    seats: number;
+    price: number;
+};
 
 type RideItem = {
     id: string;
@@ -33,6 +52,7 @@ type RideItem = {
     rideId?: string;
     bookingId?: string;
     canEdit?: boolean;
+    riderBookings?: RiderBooking[];
 };
 
 const formatRideTime = (value?: string) => {
@@ -55,6 +75,53 @@ export default function MyRidesScreen() {
     const [pastRides, setPastRides] = useState<RideItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [userName, setUserName] = useState('');
+    const [userPhone, setUserPhone] = useState('');
+    const [cancellingId, setCancellingId] = useState<string | null>(null);
+    const [reloadKey, setReloadKey] = useState(0);
+
+    const handleCancelBooking = (ride: RideItem, bookingId?: string) => {
+        const id = bookingId || ride.bookingId;
+        if (!id) {
+            Alert.alert('Error', 'Could not find this booking to cancel.');
+            return;
+        }
+
+        const isOwner = ride.type === 'owner';
+        Alert.alert(
+            'Cancel Booking?',
+            isOwner
+                ? 'Cancel this rider\'s booking? The rider will be notified.'
+                : 'Are you sure you want to cancel? The ride owner will be notified.',
+            [
+                { text: 'No, Keep It', style: 'cancel' },
+                {
+                    text: 'Yes, Cancel',
+                    style: 'destructive',
+                    onPress: async () => {
+                        setCancellingId(id);
+                        try {
+                            await cancelBooking(id, userPhone);
+                            setReloadKey((k) => k + 1);
+                            Alert.alert(
+                                'Cancelled',
+                                isOwner
+                                    ? 'The booking was cancelled and the rider was notified.'
+                                    : 'Your booking has been cancelled.'
+                            );
+                        } catch (error: any) {
+                            const msg =
+                                error?.response?.data?.errors?.[0]?.message ||
+                                error?.message ||
+                                'Could not cancel booking. Try again.';
+                            Alert.alert('Error', msg);
+                        } finally {
+                            setCancellingId(null);
+                        }
+                    },
+                },
+            ]
+        );
+    };
 
     useFocusEffect(
         useCallback(() => {
@@ -64,19 +131,38 @@ export default function MyRidesScreen() {
                     const session = await getSession();
                     if (!session?.phone) {
                         setUserName('');
+                        setUserPhone('');
                         setUpcomingRides([]);
                         setPastRides([]);
                         return;
                     }
 
+                    setUserPhone(session.phone);
                     setUserName(getDisplayName(session.name));
 
-                    const [bookings, offeredRides, allRides, ridesWithBookings] = await Promise.all([
-                        getUserBookings(session.phone),
-                        getUserOfferedRides(session.phone),
-                        getRides(),
-                        getRideIdsWithActiveBookings(),
-                    ]);
+                    const [bookings, offeredRides, allRides, ridesWithBookings, ownerBookings] =
+                        await Promise.all([
+                            getUserBookings(session.phone),
+                            getUserOfferedRides(session.phone),
+                            getRides(),
+                            getRideIdsWithActiveBookings(),
+                            getBookingsForOwnerRides(session.phone),
+                        ]);
+
+                    const ownerBookingsByRide = new Map<string, RiderBooking[]>();
+                    for (const booking of ownerBookings) {
+                        const rideIdStr = resolveRelationId(booking.ride_id) || '';
+                        if (!rideIdStr) continue;
+                        const list = ownerBookingsByRide.get(rideIdStr) || [];
+                        list.push({
+                            bookingId: String(booking.id),
+                            riderName: String(booking.rider_name || 'Rider').trim() || 'Rider',
+                            riderPhone: normalizePhone(String(booking.rider_phone || '')),
+                            seats: Math.max(1, Number(booking.seats_booked) || 1),
+                            price: Number(booking.total_price) || 0,
+                        });
+                        ownerBookingsByRide.set(rideIdStr, list);
+                    }
 
                     const nameCache = new Map<string, string>();
                     const getOwnerLabel = async (raw?: string) => {
@@ -114,7 +200,7 @@ export default function MyRidesScreen() {
                             driverPhone: normalizePhone(driverRaw) || driverRaw,
                             price: Number(booking.total_price) || 0,
                             pricePerSeat: Number(ride?.price_per_seat) || Number(booking.total_price) || 0,
-                            seats: Number(ride?.available_seats) || 1,
+                            seats: Math.max(1, Number(booking.seats_booked) || 1),
                             status: isUpcoming ? 'confirmed' : 'completed',
                             rideId: rideIdStr || ride?.id?.toString(),
                             bookingId: String(booking.id),
@@ -127,6 +213,7 @@ export default function MyRidesScreen() {
                         const seats = Number(ride.available_seats) || 0;
                         const pricePerSeat = Number(ride.price_per_seat) || 0;
                         const rideIdStr = ride.id?.toString() || '';
+                        const riderBookings = ownerBookingsByRide.get(rideIdStr) || [];
                         items.push({
                             id: `ride-${ride.id}`,
                             type: 'owner',
@@ -142,6 +229,7 @@ export default function MyRidesScreen() {
                             status: isUpcoming ? 'confirmed' : 'completed',
                             rideId: rideIdStr,
                             canEdit: isUpcoming && rideIdStr.length > 0 && !ridesWithBookings.has(rideIdStr),
+                            riderBookings,
                         });
                     }
 
@@ -156,7 +244,7 @@ export default function MyRidesScreen() {
                 }
             };
             loadRides();
-        }, [])
+        }, [reloadKey])
     );
 
     const RideCard = ({ ride }: { ride: RideItem }) => (
@@ -189,21 +277,73 @@ export default function MyRidesScreen() {
             </View>
 
             {ride.type === 'rider' && (
-                <TouchableOpacity
-                    style={styles.viewButton}
-                    onPress={() =>
-                        router.push({
-                            pathname: '/booking',
-                            params: {
-                                viewOnly: 'true',
-                                bookingId: ride.bookingId || '',
-                            },
-                        })
-                    }
-                >
-                    <Text style={styles.viewButtonText}>View Booking →</Text>
-                </TouchableOpacity>
+                <View style={styles.actionRow}>
+                    <TouchableOpacity
+                        style={styles.viewButton}
+                        onPress={() =>
+                            router.push({
+                                pathname: '/booking',
+                                params: {
+                                    viewOnly: 'true',
+                                    bookingId: ride.bookingId || '',
+                                },
+                            })
+                        }
+                    >
+                        <Text style={styles.viewButtonText}>View Booking</Text>
+                    </TouchableOpacity>
+                    {ride.status === 'confirmed' && ride.bookingId ? (
+                        <TouchableOpacity
+                            style={[
+                                styles.cancelButton,
+                                cancellingId === ride.bookingId && styles.cancelButtonDisabled,
+                            ]}
+                            onPress={() => handleCancelBooking(ride)}
+                            disabled={cancellingId === ride.bookingId}
+                        >
+                            {cancellingId === ride.bookingId ? (
+                                <ActivityIndicator color="#d32f2f" size="small" />
+                            ) : (
+                                <Text style={styles.cancelButtonText}>Cancel</Text>
+                            )}
+                        </TouchableOpacity>
+                    ) : null}
+                </View>
             )}
+
+            {ride.type === 'owner' && ride.riderBookings && ride.riderBookings.length > 0 ? (
+                <View style={styles.bookingsSection}>
+                    <Text style={styles.bookingsTitle}>
+                        Booked riders ({ride.riderBookings.length})
+                    </Text>
+                    {ride.riderBookings.map((booking) => (
+                        <View key={booking.bookingId} style={styles.riderBookingRow}>
+                            <View style={styles.riderBookingInfo}>
+                                <Text style={styles.riderName}>{booking.riderName}</Text>
+                                <Text style={styles.riderMeta}>
+                                    {booking.seats} seat{booking.seats === 1 ? '' : 's'} • ₹{booking.price}
+                                </Text>
+                            </View>
+                            {ride.status === 'confirmed' ? (
+                                <TouchableOpacity
+                                    style={[
+                                        styles.ownerCancelButton,
+                                        cancellingId === booking.bookingId && styles.cancelButtonDisabled,
+                                    ]}
+                                    onPress={() => handleCancelBooking(ride, booking.bookingId)}
+                                    disabled={cancellingId === booking.bookingId}
+                                >
+                                    {cancellingId === booking.bookingId ? (
+                                        <ActivityIndicator color="#d32f2f" size="small" />
+                                    ) : (
+                                        <Text style={styles.cancelButtonText}>Cancel</Text>
+                                    )}
+                                </TouchableOpacity>
+                            ) : null}
+                        </View>
+                    ))}
+                </View>
+            ) : null}
 
             {ride.type === 'owner' && ride.canEdit && ride.rideId ? (
                 <TouchableOpacity
@@ -217,7 +357,9 @@ export default function MyRidesScreen() {
                 >
                     <Text style={styles.editButtonText}>Edit ride ✏️</Text>
                 </TouchableOpacity>
-            ) : ride.type === 'owner' && ride.status === 'confirmed' ? (
+            ) : ride.type === 'owner' && ride.status === 'confirmed' && !ride.riderBookings?.length ? (
+                <Text style={styles.editHint}>No bookings yet — you can still edit this ride</Text>
+            ) : ride.type === 'owner' && ride.status === 'confirmed' && ride.riderBookings?.length ? (
                 <Text style={styles.editHint}>Bookings exist — editing is locked</Text>
             ) : null}
         </View>
@@ -229,11 +371,14 @@ export default function MyRidesScreen() {
                 <TouchableOpacity onPress={() => router.back()} style={styles.backButton} hitSlop={12}>
                     <Text style={styles.backText}>← Back</Text>
                 </TouchableOpacity>
-                <View style={styles.headerText}>
-                    <Text style={styles.title}>My Rides</Text>
-                    <Text style={styles.subtitle}>
-                        {userName ? `Hi ${userName} • your bookings and offered rides` : 'Your bookings and offered rides'}
-                    </Text>
+                <View style={styles.headerRow}>
+                    <View style={styles.headerText}>
+                        <Text style={styles.title}>My Rides</Text>
+                        <Text style={styles.subtitle}>
+                            {userName ? `Hi ${userName} • your bookings and offered rides` : 'Your bookings and offered rides'}
+                        </Text>
+                    </View>
+                    <NotificationBell />
                 </View>
             </View>
 
@@ -249,11 +394,11 @@ export default function MyRidesScreen() {
                         <>
                             <View style={styles.statBox}>
                                 <Text style={styles.statNumber}>{stats.ridesTaken}</Text>
-                                <Text style={styles.statLabel}>Rides Taken</Text>
+                                <Text style={styles.statLabel}>Taken</Text>
                             </View>
                             <View style={styles.statBox}>
                                 <Text style={styles.statNumber}>{stats.ridesOffered}</Text>
-                                <Text style={styles.statLabel}>Rides Offered</Text>
+                                <Text style={styles.statLabel}>Offered</Text>
                             </View>
                             <View style={styles.statBox}>
                                 <Text style={styles.statNumber}>₹{stats.saved}</Text>
@@ -302,7 +447,8 @@ const styles = StyleSheet.create({
     },
     backButton: { marginBottom: 12 },
     backText: { color: '#fff', fontSize: 16, fontWeight: '600', opacity: 0.95 },
-    headerText: { flex: 1 },
+    headerRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
+    headerText: { flex: 1, paddingRight: 12 },
     title: { color: '#fff', fontSize: 26, fontWeight: 'bold' },
     subtitle: { color: '#fff', fontSize: 16, opacity: 0.9, marginTop: 4 },
     statsRow: {
@@ -317,7 +463,7 @@ const styles = StyleSheet.create({
     statBox: { alignItems: 'center', flex: 1 },
     statsLoader: { flex: 1, paddingVertical: 8 },
     statNumber: { fontSize: 22, fontWeight: 'bold', color: '#1a73e8' },
-    statLabel: { fontSize: 12, color: '#666', marginTop: 4, textAlign: 'center' },
+    statLabel: { fontSize: 12, color: '#666', marginTop: 4, textAlign: 'center', minWidth: 56 },
     loader: { marginVertical: 32 },
     sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#333', marginBottom: 12 },
     emptyCard: {
@@ -342,14 +488,56 @@ const styles = StyleSheet.create({
     price: { fontSize: 20, fontWeight: 'bold', color: '#1a73e8' },
     cardBottom: { flexDirection: 'row', gap: 16, marginBottom: 4 },
     meta: { fontSize: 13, color: '#666', flex: 1 },
+    actionRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
     viewButton: {
         backgroundColor: '#1a73e8',
         borderRadius: 10,
         padding: 12,
         alignItems: 'center',
-        marginTop: 12,
+        flex: 1,
     },
     viewButtonText: { color: '#fff', fontWeight: '600', fontSize: 15 },
+    cancelButton: {
+        borderWidth: 1.5,
+        borderColor: '#d32f2f',
+        borderRadius: 10,
+        padding: 12,
+        alignItems: 'center',
+        justifyContent: 'center',
+        minWidth: 96,
+        backgroundColor: '#fff',
+    },
+    ownerCancelButton: {
+        borderWidth: 1.5,
+        borderColor: '#d32f2f',
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        backgroundColor: '#fff',
+        minWidth: 72,
+        alignItems: 'center',
+    },
+    cancelButtonDisabled: { opacity: 0.6 },
+    cancelButtonText: { color: '#d32f2f', fontWeight: '600', fontSize: 14 },
+    bookingsSection: {
+        marginTop: 12,
+        paddingTop: 12,
+        borderTopWidth: 1,
+        borderTopColor: '#eee',
+    },
+    bookingsTitle: { fontSize: 14, fontWeight: '700', color: '#333', marginBottom: 10 },
+    riderBookingRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        backgroundColor: '#f8f9fa',
+        borderRadius: 10,
+        padding: 12,
+        marginBottom: 8,
+    },
+    riderBookingInfo: { flex: 1, paddingRight: 10 },
+    riderName: { fontSize: 15, fontWeight: '600', color: '#333' },
+    riderMeta: { fontSize: 12, color: '#666', marginTop: 2 },
     editButton: {
         borderWidth: 1.5,
         borderColor: '#1a73e8',

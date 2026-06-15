@@ -76,6 +76,35 @@ export const filterRidesForFind = <
     viewerPhone?: string
 ): T[] => filterSearchableRides(rides).filter((ride) => !isOwnOfferedRide(ride, viewerPhone));
 
+const hasResendKey = () =>
+    Boolean(RESEND_API_KEY) &&
+    !RESEND_API_KEY.includes('your-resend') &&
+    !RESEND_API_KEY.includes('1234567890') &&
+    RESEND_API_KEY.startsWith('re_');
+
+const sendTransactionalEmail = async (to: string, subject: string, html: string) => {
+    if (!hasResendKey() || !to.includes('@')) return false;
+    try {
+        const emailResponse = await fetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${RESEND_API_KEY}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                from: 'CarpoolApp <onboarding@resend.dev>',
+                to,
+                subject,
+                html,
+            }),
+        });
+        return emailResponse.ok;
+    } catch (error) {
+        console.warn('Transactional email failed:', error);
+        return false;
+    }
+};
+
 export const sendEmailOTP = async (email: string, userId: string) => {
     const normalizedEmail = normalizeEmail(email);
     assertOfficialWorkEmail(normalizedEmail);
@@ -105,13 +134,7 @@ export const sendEmailOTP = async (email: string, userId: string) => {
         status: 'active',
     });
 
-    const hasResendKey =
-        Boolean(RESEND_API_KEY) &&
-        !RESEND_API_KEY.includes('your-resend') &&
-        !RESEND_API_KEY.includes('1234567890') &&
-        RESEND_API_KEY.startsWith('re_');
-
-    if (hasResendKey) {
+    if (hasResendKey()) {
         try {
             const emailResponse = await fetch('https://api.resend.com/emails', {
                 method: 'POST',
@@ -240,13 +263,30 @@ export const getDisplayName = (name?: string | null, _phone?: string | null) => 
     return name?.trim() || '';
 };
 
+/** Directus may return booleans as true, 1, or string — normalize for the app session. */
+export const isEmailVerifiedFlag = (value: unknown): boolean => {
+    if (value === true || value === 1) return true;
+    if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        return normalized === 'true' || normalized === '1' || normalized === 'yes';
+    }
+    return false;
+};
+
+const readEmailVerifiedFromUser = (user: Record<string, unknown>) => {
+    if ('email_verified' in user) return isEmailVerifiedFlag(user.email_verified);
+    if ('emailVerified' in user) return isEmailVerifiedFlag(user.emailVerified);
+    return false;
+};
+
 export const buildSessionFromUser = (user: {
     id: string | number;
     phone?: string;
     name?: string | null;
     gender?: string | null;
     email?: string | null;
-    email_verified?: boolean;
+    email_verified?: unknown;
+    emailVerified?: unknown;
     car_model?: string | null;
     car_number?: string | null;
     car_color?: string | null;
@@ -257,26 +297,118 @@ export const buildSessionFromUser = (user: {
     name: user.name?.trim() || '',
     gender: user.gender,
     email: user.email,
-    emailVerified: user.email_verified,
+    emailVerified: readEmailVerifiedFromUser(user as Record<string, unknown>),
     carModel: user.car_model,
     carNumber: user.car_number,
     carColor: user.car_color,
 });
 
-/** Fields that exist on a typical app_users collection (omit optional columns like gender). */
-const USER_READ_FIELDS = 'id,phone,name,mpin,email,email_verified,car_model,car_number,car_color';
-const USER_READ_FIELDS_MINIMAL = 'id,phone,name,mpin';
+/** Profile reads — never request mpin (often blocked); avoids fallback wiping email/car. */
+const USER_PROFILE_FIELDS =
+    'id,phone,name,email,email_verified,car_model,car_number,car_color,gender';
+const USER_AUTH_FIELDS = 'id,phone,name,mpin';
+
+/** Full profile from Directus (all fields the token can read). */
+export const fetchAppUserProfile = async (opts: {
+    userId?: string | number;
+    phone?: string;
+}) => {
+    const id = opts.userId != null ? String(opts.userId) : '';
+    const normalized = opts.phone ? normalizePhone(opts.phone) : '';
+
+    if (id) {
+        for (const params of [{}, { fields: '*' }, { fields: USER_PROFILE_FIELDS }]) {
+            try {
+                const response = await api.get(`/items/app_users/${id}`, { params });
+                if (response.data?.data) return response.data.data;
+            } catch (error) {
+                console.warn(`fetchAppUserProfile id=${id} failed:`, error);
+            }
+        }
+    }
+
+    if (normalized.length === 10) {
+        for (const params of [
+            { 'filter[phone][_eq]': normalized, limit: 1 },
+            { 'filter[phone][_eq]': normalized, limit: 1, fields: '*' },
+            {
+                'filter[phone][_eq]': normalized,
+                limit: 1,
+                fields: USER_PROFILE_FIELDS,
+            },
+        ]) {
+            try {
+                const response = await api.get('/items/app_users', { params });
+                const user = response.data?.data?.[0];
+                if (user) return user;
+            } catch (error) {
+                console.warn(`fetchAppUserProfile phone=${normalized} failed:`, error);
+            }
+        }
+    }
+
+    return null;
+};
+
+export const mergeSessionFromUser = (
+    existing: Record<string, unknown> | null,
+    user: Record<string, unknown>
+) => {
+    const built = buildSessionFromUser(user as Parameters<typeof buildSessionFromUser>[0]);
+    const has = (key: string) => user[key] !== undefined && user[key] !== null;
+
+    return {
+        ...existing,
+        loggedIn: true,
+        userId: user.id ?? existing?.userId,
+        phone: normalizePhone(String(user.phone || existing?.phone || '')) || existing?.phone,
+        name: built.name || existing?.name || '',
+        gender: has('gender') ? user.gender : existing?.gender,
+        email: has('email') ? user.email : existing?.email,
+        emailVerified:
+            'email_verified' in user || 'emailVerified' in user
+                ? readEmailVerifiedFromUser(user)
+                : Boolean(existing?.emailVerified),
+        carModel: has('car_model') ? user.car_model : existing?.carModel,
+        carNumber: has('car_number') ? user.car_number : existing?.carNumber,
+        carColor: has('car_color') ? user.car_color : existing?.carColor,
+    };
+};
+
+export const canOfferRides = (session: {
+    emailVerified?: boolean;
+    carModel?: string | null;
+    carNumber?: string | null;
+} | null) =>
+    Boolean(
+        session?.emailVerified &&
+            String(session?.carModel || '').trim() &&
+            String(session?.carNumber || '').trim()
+    );
 
 export const getUserById = async (userId: string | number) => {
-    const id = String(userId);
-    if (!id) return null;
+    return fetchAppUserProfile({ userId });
+};
 
-    for (const fields of [USER_READ_FIELDS, USER_READ_FIELDS_MINIMAL]) {
+export const findUserByPhoneForAuth = async (phone: string, excludeUserId?: string) => {
+    const normalized = normalizePhone(phone);
+    if (normalized.length !== 10) return null;
+
+    for (const fields of [USER_AUTH_FIELDS, 'id,phone,name,mpin']) {
         try {
-            const response = await api.get(`/items/app_users/${id}`, { params: { fields } });
-            return response.data?.data ?? null;
+            const response = await api.get('/items/app_users', {
+                params: {
+                    'filter[phone][_eq]': normalized,
+                    fields,
+                    limit: 1,
+                },
+            });
+            const user = response.data?.data?.[0];
+            if (!user) return null;
+            if (excludeUserId && String(user.id) === String(excludeUserId)) return null;
+            return user;
         } catch (error) {
-            console.warn(`getUserById(${id}) fields=${fields} failed:`, error);
+            console.warn(`findUserByPhoneForAuth fields=${fields} failed:`, error);
         }
     }
     return null;
@@ -300,25 +432,13 @@ export const findUserByPhone = async (phone: string, excludeUserId?: string) => 
     const normalized = normalizePhone(phone);
     if (normalized.length !== 10) return null;
 
-    const filterParams = {
-        'filter[phone][_eq]': normalized,
-        limit: 1,
-    };
-
-    for (const fields of [USER_READ_FIELDS, USER_READ_FIELDS_MINIMAL]) {
-        try {
-            const response = await api.get('/items/app_users', {
-                params: { ...filterParams, fields },
-            });
-            const user = response.data?.data?.[0];
-            if (!user) return null;
-            if (excludeUserId && String(user.id) === String(excludeUserId)) return null;
-            return user;
-        } catch (error) {
-            console.warn(`findUserByPhone fields=${fields} failed:`, error);
-        }
+    const user = await fetchAppUserProfile({ phone: normalized });
+    if (!user) {
+        const authUser = await findUserByPhoneForAuth(normalized, excludeUserId);
+        return authUser;
     }
-    return null;
+    if (excludeUserId && String(user.id) === String(excludeUserId)) return null;
+    return user;
 };
 
 export const assertPhoneAvailable = async (phone: string, forUserId?: string) => {
@@ -380,15 +500,43 @@ export const createUser = async (phone: string, name: string) => {
     }
 };
 
-export const updateUserProfile = async (userId: string, data: any) => {
+const stripFieldFromPayload = (payload: Record<string, unknown>, field: string) => {
+    const next = { ...payload };
+    delete next[field];
+    return next;
+};
+
+export const updateUserProfile = async (userId: string, data: Record<string, unknown>) => {
     const payload = { ...data };
     if (payload.email != null && payload.email !== '') {
         payload.email = normalizeEmail(String(payload.email));
-        assertOfficialWorkEmail(payload.email);
-        await assertEmailAvailable(payload.email, userId);
+        assertOfficialWorkEmail(payload.email as string);
+        await assertEmailAvailable(payload.email as string, userId);
     }
-    const response = await api.patch(`/items/app_users/${userId}`, payload);
-    return response.data.data;
+
+    const optionalFields = ['gender', 'car_model', 'car_number', 'car_color', 'email_verified'];
+    let attempt: Record<string, unknown> = { ...payload };
+
+    for (let i = 0; i <= optionalFields.length; i++) {
+        try {
+            const response = await api.patch(`/items/app_users/${userId}`, attempt);
+            return response.data.data;
+        } catch (error: any) {
+            const message = (error?.response?.data?.errors?.[0]?.message || '').toLowerCase();
+            const fieldFromError = optionalFields.find(
+                (field) => message.includes(field) || message.includes(field.replace('_', ' '))
+            );
+            if (fieldFromError && fieldFromError in attempt) {
+                console.warn(`updateUserProfile: retrying without ${fieldFromError}`);
+                attempt = stripFieldFromPayload(attempt, fieldFromError);
+                continue;
+            }
+            const detail = error?.response?.data?.errors?.[0]?.message;
+            throw new Error(detail || 'Could not save profile. Check Directus field setup.');
+        }
+    }
+
+    throw new Error('Could not save profile.');
 };
 
 export const getRides = async () => {
@@ -511,6 +659,7 @@ export const createBooking = async (bookingData: any) => {
         seats_booked: seatsBooked,
         rider_phone: normalizePhone(bookingData.rider_phone || ''),
         payment_status: bookingData.payment_status || 'pending',
+        status: 'confirmed',
     });
     const booking = response.data?.data;
     if (!booking?.id) {
@@ -554,7 +703,199 @@ const ACTIVE_BOOKING_QUERY = {
     'filter[payment_status][_neq]': 'cancelled',
 };
 
-export const cancelBooking = async (bookingId: string) => {
+export const isNotificationRead = (value: unknown): boolean =>
+    value === true || value === 1 || value === '1' || String(value).toLowerCase() === 'true';
+
+export const createAppNotification = async (
+    recipientPhone: string,
+    title: string,
+    message: string,
+    bookingId?: string
+) => {
+    const phone = normalizePhone(recipientPhone);
+    if (phone.length !== 10) return null;
+
+    try {
+        const response = await api.post('/items/app_notifications', {
+            recipient_phone: phone,
+            title,
+            message,
+            booking_id: bookingId ? String(bookingId) : null,
+            read: false,
+        });
+        return response.data?.data;
+    } catch (error: any) {
+        const status = error?.response?.status;
+        console.warn(
+            'createAppNotification failed:',
+            status,
+            error?.response?.data || error?.message
+        );
+        if (status === 403 || status === 404) {
+            console.warn('Run: npm run setup-notifications');
+        }
+        return null;
+    }
+};
+
+export const getNotificationsForUser = async (phone: string, includeRead = true) => {
+    const normalized = normalizePhone(phone);
+    if (normalized.length !== 10) return [];
+
+    const baseParams: Record<string, string | number> = {
+        'filter[recipient_phone][_eq]': normalized,
+        sort: '-id',
+        limit: 50,
+    };
+    if (!includeRead) {
+        baseParams['filter[read][_eq]'] = 'false';
+    }
+
+    try {
+        const response = await api.get('/items/app_notifications', {
+            params: {
+                ...baseParams,
+                fields: 'id,title,message,booking_id,read',
+            },
+        });
+        return response.data?.data || [];
+    } catch (error: any) {
+        console.warn('getNotificationsForUser fields query failed, retrying:', error?.response?.data || error?.message);
+        try {
+            const response = await api.get('/items/app_notifications', {
+                params: { ...baseParams, fields: '*' },
+            });
+            return response.data?.data || [];
+        } catch (retryError: any) {
+            const status = retryError?.response?.status;
+            if (status === 403 || status === 404) {
+                console.warn(
+                    'getNotificationsForUser failed — run: npm run setup-notifications',
+                    retryError?.response?.data || retryError?.message
+                );
+            } else {
+                console.warn('getNotificationsForUser failed:', retryError);
+            }
+            return [];
+        }
+    }
+};
+
+export const getUnreadNotificationCount = async (phone: string) => {
+    const normalized = normalizePhone(phone);
+    if (normalized.length !== 10) return 0;
+
+    try {
+        const response = await api.get('/items/app_notifications', {
+            params: {
+                'filter[recipient_phone][_eq]': normalized,
+                'filter[read][_eq]': 'false',
+                'aggregate[count]': 'id',
+            },
+        });
+        const count = response.data?.data?.[0]?.count?.id;
+        return Number(count) || 0;
+    } catch {
+        return 0;
+    }
+};
+
+export const markAllNotificationsRead = async (phone: string) => {
+    const normalized = normalizePhone(phone);
+    if (normalized.length !== 10) return;
+
+    try {
+        const unread = await getNotificationsForUser(normalized, false);
+        await Promise.all(
+            unread
+                .filter((n: { id?: string | number; read?: unknown }) => !isNotificationRead(n.read))
+                .map((n: { id: string | number }) =>
+                    api.patch(`/items/app_notifications/${n.id}`, { read: true })
+                )
+        );
+    } catch (error) {
+        console.warn('markAllNotificationsRead failed:', error);
+    }
+};
+
+export const markNotificationRead = async (notificationId: string) => {
+    try {
+        await api.patch(`/items/app_notifications/${notificationId}`, { read: true });
+    } catch (error) {
+        console.warn('markNotificationRead failed:', error);
+    }
+};
+
+const notifyBookingCancellation = async (
+    booking: Record<string, unknown>,
+    cancelledByPhone?: string
+) => {
+    const rideRef = booking.ride_id;
+    const ride =
+        typeof rideRef === 'object' && rideRef !== null
+            ? (rideRef as Record<string, unknown>)
+            : await getRideById(resolveRelationId(rideRef) || '');
+
+    const riderPhone = normalizePhone(String(booking.rider_phone || ''));
+    const ownerPhone = normalizePhone(String(ride?.driver_name || ''));
+    const canceller = normalizePhone(cancelledByPhone || '');
+    const bookingId = String(booking.id || '');
+    const seats = Math.max(1, Number(booking.seats_booked) || 1);
+    const route = `${ride?.from_location || 'Pickup'} → ${ride?.to_location || 'Destination'}`;
+    const riderName = String(booking.rider_name || 'A rider').trim() || 'A rider';
+
+    const notifyRecipient = async (
+        recipientPhone: string,
+        title: string,
+        message: string
+    ) => {
+        if (recipientPhone.length !== 10) return;
+        await createAppNotification(recipientPhone, title, message, bookingId);
+
+        const user = await fetchAppUserProfile({ phone: recipientPhone });
+        const email = user?.email ? normalizeEmail(String(user.email)) : '';
+        if (email && isEmailVerifiedFlag(user?.email_verified)) {
+            await sendTransactionalEmail(
+                email,
+                title,
+                `<div style="font-family: Arial, sans-serif; max-width: 600px;">
+                    <h2 style="color: #1a73e8;">🚗 CarpoolApp</h2>
+                    <p>${message}</p>
+                    <p>Open the app → My Rides for details.</p>
+                </div>`
+            );
+        }
+    };
+
+    if (canceller === riderPhone && ownerPhone) {
+        await notifyRecipient(
+            ownerPhone,
+            'Booking cancelled',
+            `${riderName} cancelled ${seats} seat(s) on ${route}.`
+        );
+    } else if (canceller === ownerPhone && riderPhone) {
+        await notifyRecipient(
+            riderPhone,
+            'Booking cancelled by owner',
+            `Your booking for ${seats} seat(s) on ${route} was cancelled by the ride owner.`
+        );
+    } else if (riderPhone && ownerPhone) {
+        const otherPhone = canceller === riderPhone ? ownerPhone : riderPhone;
+        await notifyRecipient(
+            otherPhone,
+            'Booking cancelled',
+            `Booking for ${seats} seat(s) on ${route} was cancelled.`
+        );
+    } else if (riderPhone) {
+        await notifyRecipient(
+            riderPhone,
+            'Booking cancelled',
+            `Your booking for ${seats} seat(s) on ${route} has been cancelled.`
+        );
+    }
+};
+
+export const cancelBooking = async (bookingId: string, cancelledByPhone?: string) => {
     const id = String(bookingId);
     if (!id) throw new Error('Booking not found.');
 
@@ -586,6 +927,12 @@ export const cancelBooking = async (bookingId: string) => {
 
     if (rideId) {
         await adjustRideAvailableSeats(rideId, seatsBooked);
+    }
+
+    try {
+        await notifyBookingCancellation(existing as Record<string, unknown>, cancelledByPhone);
+    } catch (error) {
+        console.warn('Cancellation notification failed:', error);
     }
 
     return cancelled;
@@ -654,6 +1001,55 @@ export const getUserStats = async (phone: string): Promise<UserStats> => {
     } catch (error) {
         console.error('getUserStats failed:', error);
         throw error;
+    }
+};
+
+export const getBookingsForRide = async (rideId: string | number) => {
+    const id = String(rideId);
+    if (!id) return [];
+
+    try {
+        const response = await api.get('/items/bookings', {
+            params: {
+                'filter[ride_id][_eq]': id,
+                ...ACTIVE_BOOKING_QUERY,
+                fields:
+                    'id,ride_id,rider_name,rider_phone,seats_booked,total_price,payment_status,status,date_created',
+                sort: '-date_created',
+                limit: 50,
+            },
+        });
+        return filterActiveBookings(response.data?.data || []);
+    } catch (error) {
+        console.warn('getBookingsForRide failed:', error);
+        return [];
+    }
+};
+
+/** Active bookings on rides offered by this owner (driver_name = phone). */
+export const getBookingsForOwnerRides = async (ownerPhone: string) => {
+    const normalized = normalizePhone(ownerPhone);
+    if (!normalized) return [];
+
+    const rides = await getUserOfferedRides(normalized);
+    const rideIds = rides.map((r: { id?: string | number }) => String(r.id)).filter(Boolean);
+    if (rideIds.length === 0) return [];
+
+    try {
+        const response = await api.get('/items/bookings', {
+            params: {
+                'filter[ride_id][_in]': rideIds.join(','),
+                ...ACTIVE_BOOKING_QUERY,
+                fields:
+                    'id,ride_id,rider_name,rider_phone,seats_booked,total_price,payment_status,status,date_created',
+                sort: '-date_created',
+                limit: 100,
+            },
+        });
+        return filterActiveBookings(response.data?.data || []);
+    } catch (error) {
+        console.warn('getBookingsForOwnerRides failed:', error);
+        return [];
     }
 };
 

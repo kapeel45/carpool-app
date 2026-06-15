@@ -91,6 +91,8 @@ export default function BookingScreen() {
     const [bookingDone, setBookingDone] = useState(viewOnly);
     const [activeBookingId, setActiveBookingId] = useState(bookingId);
     const [bookingCancelled, setBookingCancelled] = useState(false);
+    const [loadedBooking, setLoadedBooking] = useState<any>(null);
+    const [isOwnerViewer, setIsOwnerViewer] = useState(false);
     const [seatsToBook, setSeatsToBook] = useState(1);
     const [confirming, setConfirming] = useState(false);
 
@@ -123,6 +125,13 @@ export default function BookingScreen() {
                     if (!cancelled) {
                         setDetails(nextDetails);
                         setSeatsToBook(seatsBooked);
+                        setLoadedBooking(booking);
+                        if (booking?.id) setActiveBookingId(String(booking.id));
+                        const session = await getSession();
+                        const driverPhone = normalizePhone(String(ride?.driver_name || ''));
+                        setIsOwnerViewer(
+                            Boolean(session?.phone) && driverPhone === normalizePhone(session.phone)
+                        );
                     }
                     return;
                 }
@@ -232,8 +241,10 @@ export default function BookingScreen() {
         }
 
         Alert.alert(
-            'Cancel Booking?',
-            'Are you sure you want to cancel this booking?',
+            isOwnerViewer ? 'Cancel rider booking?' : 'Cancel Booking?',
+            isOwnerViewer
+                ? 'The rider will be notified that their booking was cancelled.'
+                : 'Are you sure you want to cancel this booking?',
             [
                 { text: 'No, Keep It', style: 'cancel' },
                 {
@@ -241,13 +252,27 @@ export default function BookingScreen() {
                     style: 'destructive',
                     onPress: async () => {
                         try {
-                            await cancelBooking(idToCancel);
+                            const session = await getSession();
+                            await cancelBooking(idToCancel, session?.phone);
                             setBookingCancelled(true);
-                            Alert.alert('Cancelled', 'Your booking has been cancelled.', [
-                                { text: 'OK', onPress: () => router.replace('/search') },
-                            ]);
-                        } catch {
-                            Alert.alert('Error', 'Could not cancel booking. Try again.');
+                            setLoadedBooking((prev: any) =>
+                                prev
+                                    ? { ...prev, payment_status: 'cancelled', status: 'cancelled' }
+                                    : prev
+                            );
+                            Alert.alert(
+                                'Cancelled',
+                                isOwnerViewer
+                                    ? 'The booking was cancelled and the rider was notified.'
+                                    : 'Your booking has been cancelled.',
+                                [{ text: 'OK', onPress: () => router.replace('/myrides') }]
+                            );
+                        } catch (error: any) {
+                            const msg =
+                                error?.response?.data?.errors?.[0]?.message ||
+                                error?.message ||
+                                'Could not cancel booking. Try again.';
+                            Alert.alert('Error', msg);
                         }
                     },
                 },
@@ -277,6 +302,11 @@ export default function BookingScreen() {
     const maxSeats = details?.availableSeats ?? 1;
     const totalPrice = (details?.pricePerSeat || 0) * displaySeats;
     const showSeatPicker = !viewOnly && !bookingDone && !bookingCancelled && Boolean(rideId);
+    const showCancelButton =
+        Boolean(bookingId || activeBookingId) &&
+        !bookingCancelled &&
+        (!loadedBooking || !isCancelledBooking(loadedBooking)) &&
+        (viewOnly || bookingDone || isOwnerViewer);
 
     return (
         <View style={styles.container}>
@@ -420,12 +450,16 @@ export default function BookingScreen() {
                         </View>
                     </View>
 
-                    {bookingDone &&
-                    !bookingCancelled &&
-                    details?.paymentStatus?.toLowerCase() !== 'cancelled' ? (
+                    {showCancelButton ? (
                         <TouchableOpacity style={styles.cancelButton} onPress={handleCancel}>
-                            <Text style={styles.cancelButtonText}>Cancel Booking</Text>
+                            <Text style={styles.cancelButtonText}>
+                                {isOwnerViewer ? 'Cancel Rider Booking' : 'Cancel Booking'}
+                            </Text>
                         </TouchableOpacity>
+                    ) : bookingCancelled || (loadedBooking && isCancelledBooking(loadedBooking)) ? (
+                        <View style={styles.cancelledBanner}>
+                            <Text style={styles.cancelledText}>This booking was cancelled.</Text>
+                        </View>
                     ) : null}
                 </ScrollView>
             )}
@@ -534,4 +568,12 @@ const styles = StyleSheet.create({
         backgroundColor: '#fff',
     },
     cancelButtonText: { color: '#d32f2f', fontSize: 16, fontWeight: 'bold' },
+    cancelledBanner: {
+        backgroundColor: '#fdecea',
+        borderRadius: 12,
+        padding: 16,
+        alignItems: 'center',
+        marginTop: 4,
+    },
+    cancelledText: { color: '#c62828', fontSize: 15, fontWeight: '600' },
 });

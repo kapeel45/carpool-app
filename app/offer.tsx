@@ -14,7 +14,8 @@ import {
     normalizePhone,
     updateRide,
 } from './config/api';
-import { getSession } from './config/session';
+import { canOfferRides } from './config/api';
+import { getSession, refreshSessionFromServer } from './config/session';
 
 export default function OfferRideScreen() {
     const [loading, setLoading] = useState(false);
@@ -59,14 +60,22 @@ export default function OfferRideScreen() {
 
     useEffect(() => {
         const checkVerification = async () => {
-            const session = await getSession();
-            if (!session?.emailVerified) {
+            const session = await refreshSessionFromServer();
+            if (!canOfferRides(session)) {
+                const needsEmail = !session?.emailVerified;
+                const needsCar =
+                    !String(session?.carModel || '').trim() ||
+                    !String(session?.carNumber || '').trim();
                 Alert.alert(
-                    'Verification Required',
-                    'Only verified users can offer rides. Please complete your profile with official email and car details.',
+                    'Complete your profile',
+                    needsEmail
+                        ? 'Verify your work email in Profile to offer rides.'
+                        : needsCar
+                          ? 'Your email is verified. Open Profile, add car model & number, tap Save, then try again.'
+                          : 'Complete your profile with official email and car details to offer rides.',
                     [
                         { text: 'Go to Profile', onPress: () => router.replace('/profile') },
-                        { text: 'Cancel', onPress: () => router.back() }
+                        { text: 'Cancel', onPress: () => router.back() },
                     ]
                 );
             }

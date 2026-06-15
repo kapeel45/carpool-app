@@ -258,7 +258,7 @@ export default function SearchScreen() {
                             return;
                         }
                         try {
-                            await cancelBooking(meta.bookingId);
+                            await cancelBooking(meta.bookingId, userPhone);
                             setBookedIds((prev) => {
                                 const next = new Set(prev);
                                 next.delete(rideId);

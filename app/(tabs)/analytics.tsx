@@ -98,11 +98,11 @@ export default function AnalyticsScreen() {
                     <View style={styles.statsRow}>
                         <View style={styles.statBox}>
                             <Text style={styles.statNumber}>{stats.ridesTaken}</Text>
-                            <Text style={styles.statLabel}>Rides Taken</Text>
+                            <Text style={styles.statLabel}>Taken</Text>
                         </View>
                         <View style={styles.statBox}>
                             <Text style={styles.statNumber}>{stats.ridesOffered}</Text>
-                            <Text style={styles.statLabel}>Rides Offered</Text>
+                            <Text style={styles.statLabel}>Offered</Text>
                         </View>
                         <View style={styles.statBox}>
                             <Text style={styles.statNumber}>₹{stats.saved}</Text>
@@ -121,7 +121,7 @@ export default function AnalyticsScreen() {
                 ) : (
                     bookings.map((booking) => (
                         <View key={booking.id} style={styles.card}>
-                            <Text style={styles.cardTitle}>🧑 Ride booked</Text>
+                            <Text style={styles.cardTitle}>🧑 Booking</Text>
                             <Text style={styles.cardMeta}>
                                 ₹{booking.total_price} • {booking.seats_booked || 1} seat(s)
                             </Text>
@@ -130,7 +130,7 @@ export default function AnalyticsScreen() {
                     ))
                 )}
 
-                <Text style={styles.sectionTitle}>Rides Offered</Text>
+                <Text style={styles.sectionTitle}>Published by you</Text>
                 {activityLoading ? (
                     <ActivityIndicator size="small" color="#1a73e8" style={styles.sectionLoader} />
                 ) : offeredRides.length === 0 ? (
@@ -176,7 +176,7 @@ const styles = StyleSheet.create({
     },
     statBox: { alignItems: 'center' },
     statNumber: { fontSize: 24, fontWeight: 'bold', color: '#1a73e8' },
-    statLabel: { fontSize: 12, color: '#666', marginTop: 4, textAlign: 'center' },
+    statLabel: { fontSize: 12, color: '#666', marginTop: 4, textAlign: 'center', minWidth: 56 },
     sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#333', marginBottom: 12 },
     sectionLoader: { marginBottom: 16 },
     emptyCard: {

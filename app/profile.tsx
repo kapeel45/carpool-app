@@ -1,11 +1,20 @@
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { sendEmailOTP, updateUserProfile, normalizeEmail, assertEmailAvailable, findUserByPhone } from './config/api';
+import {
+    canOfferRides,
+    fetchAppUserProfile,
+    sendEmailOTP,
+    updateUserProfile,
+    normalizeEmail,
+    assertEmailAvailable,
+    mergeSessionFromUser,
+} from './config/api';
 import { validateOfficialWorkEmail } from './config/work-email';
 import { GENDER_OPTIONS, type GenderValue } from './config/gender';
-import { clearSession, getSession, saveSession } from './config/session';
+import { clearSession, getSession, refreshSessionFromServer, saveSession } from './config/session';
 
 export default function ProfileScreen() {
     const router = useRouter();
@@ -21,34 +30,54 @@ export default function ProfileScreen() {
     const [saving, setSaving] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
 
-    useEffect(() => {
-        const loadProfile = async () => {
-            setLoading(true);
-            const s = await getSession();
-            if (!s) {
-                router.replace('/login');
-                return;
-            }
-            setSession(s);
-            const user = await findUserByPhone(s.phone);
-            setName(user?.name || s.name || '');
-            setEmail(user?.email || s.email || '');
-            setGender((user?.gender as GenderValue) || (s.gender as GenderValue) || '');
-            setCarModel(user?.car_model || s.carModel || '');
-            setCarNumber(user?.car_number || s.carNumber || '');
-            setCarColor(user?.car_color || s.carColor || '');
+    const loadProfile = useCallback(async () => {
+        setLoading(true);
+        const s = await getSession();
+        if (!s?.loggedIn) {
+            router.replace('/login');
             setLoading(false);
-        };
-        loadProfile();
-    }, []);
+            return;
+        }
+
+        let merged = await refreshSessionFromServer();
+        if (!merged?.loggedIn) {
+            router.replace('/login');
+            setLoading(false);
+            return;
+        }
+
+        const hasProfileData =
+            merged.email || merged.carModel || merged.carNumber || merged.name;
+        if (!hasProfileData && merged.userId) {
+            const direct = await fetchAppUserProfile({
+                userId: merged.userId,
+                phone: merged.phone,
+            });
+            if (direct) {
+                merged = mergeSessionFromUser(merged, direct);
+                await saveSession(merged);
+            }
+        }
+
+        setSession(merged);
+        setName(merged.name || '');
+        setEmail(merged.email || '');
+        setGender((merged.gender as GenderValue) || '');
+        setCarModel(merged.carModel || '');
+        setCarNumber(merged.carNumber || '');
+        setCarColor(merged.carColor || '');
+        setLoading(false);
+    }, [router]);
+
+    useFocusEffect(
+        useCallback(() => {
+            loadProfile();
+        }, [loadProfile])
+    );
 
     const handleSave = async () => {
         if (!name) {
             Alert.alert('Required', 'Please enter your name.');
-            return;
-        }
-        if (!gender) {
-            Alert.alert('Required', 'Please select your gender.');
             return;
         }
         if (email) {
@@ -66,13 +95,22 @@ export default function ProfileScreen() {
         try {
             const emailChanged =
                 email && normalizeEmail(email) !== normalizeEmail(session?.email || '');
+            if (!carModel.trim() || !carNumber.trim()) {
+                Alert.alert(
+                    'Car details required',
+                    'Enter car model and number to offer rides. These are saved to your profile.'
+                );
+                setSaving(false);
+                return;
+            }
+
             const profileData: Record<string, unknown> = {
                 name,
-                gender,
-                car_model: carModel,
-                car_number: carNumber,
-                car_color: carColor,
+                car_model: carModel.trim(),
+                car_number: carNumber.trim(),
+                car_color: carColor.trim(),
             };
+            if (gender) profileData.gender = gender;
             if (email) {
                 await assertEmailAvailable(email, session.userId);
                 profileData.email = normalizeEmail(email);
@@ -81,16 +119,19 @@ export default function ProfileScreen() {
                 }
             }
             await updateUserProfile(session.userId, profileData);
-            await saveSession({
-                ...session,
+            const refreshed = (await refreshSessionFromServer()) || session;
+            const nextSession = {
+                ...refreshed,
                 name,
                 gender,
-                email: email ? normalizeEmail(email) : session.email,
-                emailVerified: emailChanged ? false : session.emailVerified,
+                email: email ? normalizeEmail(email) : refreshed.email,
+                emailVerified: emailChanged ? false : refreshed.emailVerified,
                 carModel,
                 carNumber,
                 carColor,
-            });
+            };
+            await saveSession(nextSession);
+            setSession(nextSession);
             setSaving(false);
             setIsEditing(false);
             Alert.alert('Saved! ✅', 'Profile saved successfully!');
@@ -248,15 +289,18 @@ export default function ProfileScreen() {
                                         car_number: carNumber,
                                         car_color: carColor,
                                     });
-                                    await saveSession({
-                                        ...session,
-                                        name: name || session.name,
+                                    const latest = (await refreshSessionFromServer()) || session;
+                                    const pendingSession = {
+                                        ...latest,
+                                        name: name || latest.name,
                                         email: normalized,
                                         emailVerified: false,
                                         carModel,
                                         carNumber,
                                         carColor,
-                                    });
+                                    };
+                                    await saveSession(pendingSession);
+                                    setSession(pendingSession);
 
                                     const result = await sendEmailOTP(normalized, session.userId);
                                     if (result.devOtp) {
@@ -319,12 +363,22 @@ export default function ProfileScreen() {
 
                 <View style={[styles.card, styles.statusCard]}>
                     <Text style={styles.sectionTitle}>Ride Offering Status</Text>
-                    {session?.emailVerified && carModel && carNumber ? (
+                    {canOfferRides({ ...session, carModel, carNumber }) ? (
                         <View style={styles.statusRow}>
                             <Text style={styles.statusIcon}>✅</Text>
                             <View>
                                 <Text style={styles.statusText}>Ready to Offer Rides</Text>
                                 <Text style={styles.statusSub}>Your profile is verified</Text>
+                            </View>
+                        </View>
+                    ) : session?.emailVerified && (!carModel.trim() || !carNumber.trim()) ? (
+                        <View style={styles.statusRow}>
+                            <Text style={styles.statusIcon}>🚗</Text>
+                            <View>
+                                <Text style={styles.statusText}>Add car details</Text>
+                                <Text style={styles.statusSub}>
+                                    Email is verified — tap Edit, enter car model & number, then Save
+                                </Text>
                             </View>
                         </View>
                     ) : email && carModel && carNumber ? (

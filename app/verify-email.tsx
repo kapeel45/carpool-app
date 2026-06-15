@@ -2,7 +2,8 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, Alert, SafeAreaView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { sendEmailOTP, verifyEmailOTP } from './config/api';
-import { getSession, saveSession } from './config/session';
+import { buildSessionFromUser, getUserById } from './config/api';
+import { getSession, refreshSessionFromServer, saveSession } from './config/session';
 
 export default function VerifyEmailScreen() {
     const router = useRouter();
@@ -41,7 +42,13 @@ export default function VerifyEmailScreen() {
             const session = await getSession();
             const result = await verifyEmailOTP(email, otp, session.userId);
             if (result.success) {
-                await saveSession({ ...session, email, emailVerified: true });
+                const user = session?.userId ? await getUserById(session.userId) : null;
+                if (user) {
+                    await saveSession(buildSessionFromUser({ ...user, email }));
+                } else {
+                    await saveSession({ ...session, email, emailVerified: true });
+                }
+                await refreshSessionFromServer();
                 Alert.alert(
                     '✅ Email Verified!',
                     'Your email has been verified. You can now offer rides!',

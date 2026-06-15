@@ -1,7 +1,9 @@
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import NotificationBell from '../components/NotificationBell';
 import { getFuelPrices, getDisplayName } from '../config/api';
 import { getSession } from '../config/session';
 import { useUserStats } from '@/hooks/use-user-stats';
@@ -14,16 +16,21 @@ export default function HomeScreen() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const { stats, loading: statsLoading } = useUserStats();
 
-  useEffect(() => {
-    const checkSession = async () => {
-      const session = await getSession();
-      if (session?.loggedIn) {
-        setUserName(getDisplayName(session.name, session.phone));
-        setIsLoggedIn(true);
-      }
-    };
-    checkSession();
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      const checkSession = async () => {
+        const session = await getSession();
+        if (session?.loggedIn) {
+          setUserName(getDisplayName(session.name, session.phone));
+          setIsLoggedIn(true);
+        } else {
+          setUserName('');
+          setIsLoggedIn(false);
+        }
+      };
+      checkSession();
+    }, [])
+  );
 
   const handleFindRide = () => {
     router.push(isLoggedIn ? '/search' : '/login');
@@ -51,11 +58,14 @@ export default function HomeScreen() {
             </Text>
             <Text style={styles.title}>Where are you going?</Text>
           </View>
-          <TouchableOpacity onPress={() => router.push('/profile')}>
-            <View style={styles.profileIcon}>
-              <Text style={styles.profileIconText}>👤</Text>
-            </View>
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            {isLoggedIn ? <NotificationBell /> : null}
+            <TouchableOpacity onPress={() => router.push('/profile')}>
+              <View style={styles.profileIcon}>
+                <Text style={styles.profileIconText}>👤</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
 
@@ -86,11 +96,11 @@ export default function HomeScreen() {
             <>
               <View style={styles.statBox}>
                 <Text style={styles.statNumber}>{stats.ridesTaken}</Text>
-                <Text style={styles.statLabel}>Rides Taken</Text>
+                <Text style={styles.statLabel}>Taken</Text>
               </View>
               <View style={styles.statBox}>
                 <Text style={styles.statNumber}>{stats.ridesOffered}</Text>
-                <Text style={styles.statLabel}>Rides Offered</Text>
+                <Text style={styles.statLabel}>Offered</Text>
               </View>
               <View style={styles.statBox}>
                 <Text style={styles.statNumber}>₹{stats.saved}</Text>
@@ -154,6 +164,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   headerText: { flex: 1, paddingRight: 12 },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   greeting: { color: '#fff', fontSize: 16, opacity: 0.9 },
   title: { color: '#fff', fontSize: 26, fontWeight: 'bold', marginTop: 4 },
   buttonContainer: { padding: 20, gap: 16 },
@@ -168,7 +179,7 @@ const styles = StyleSheet.create({
   statBox: { alignItems: 'center', flex: 1 },
   statsLoader: { flex: 1, paddingVertical: 8 },
   statNumber: { fontSize: 24, fontWeight: 'bold', color: '#1a73e8' },
-  statLabel: { fontSize: 12, color: '#666', marginTop: 4 },
+  statLabel: { fontSize: 12, color: '#666', marginTop: 4, textAlign: 'center', minWidth: 56 },
   profileIcon: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center' },
   profileIconText: { fontSize: 22 },
 });

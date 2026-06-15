@@ -29,6 +29,7 @@ export default function RootLayout() {
             <Stack.Screen name="myrides" options={{ headerShown: false }} />
             <Stack.Screen name="profile" options={{ headerShown: false }} />
             <Stack.Screen name="verify-email" options={{ headerShown: false }} />
+            <Stack.Screen name="notifications" options={{ headerShown: false }} />
           </Stack>
         </Suspense>
         <StatusBar style="auto" />

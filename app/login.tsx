@@ -13,11 +13,11 @@ import {
 import {
     buildSessionFromUser,
     createUser,
-    findUserByPhone,
-    getUserById,
+    fetchAppUserProfile,
+    findUserByPhoneForAuth,
     updateUserProfile,
 } from './config/api';
-import { getSession, saveSession } from './config/session';
+import { getSession, refreshSessionFromServer, saveSession } from './config/session';
 
 type LoginStep = 'phone' | 'set_mpin' | 'enter_mpin';
 
@@ -45,13 +45,16 @@ export default function LoginScreen() {
     }, []);
 
     const finishLogin = async (userId: string | number) => {
-        const user = await getUserById(userId);
+        const user =
+            (await fetchAppUserProfile({ userId })) ||
+            (await fetchAppUserProfile({ phone }));
         if (!user) {
             throw new Error(
                 'Account was created but could not be loaded. Log out, restart the app, and try again.'
             );
         }
         await saveSession(buildSessionFromUser(user));
+        await refreshSessionFromServer();
         router.replace('/search');
     };
 
@@ -59,7 +62,7 @@ export default function LoginScreen() {
         if (phone.length !== 10) return;
         setLoading(true);
         try {
-            const user = await findUserByPhone(phone);
+            const user = await findUserByPhoneForAuth(phone);
             setExistingUser(user);
             setIsNewUser(!user);
             setName(user?.name?.trim() || '');
