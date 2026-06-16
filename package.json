@@ -12,6 +12,7 @@
     "setup-notifications": "node ./scripts/setup-notifications.mjs",
     "setup-ride-geo": "node ./scripts/setup-ride-geo-fields.mjs",
     "setup-pickup-live": "node ./scripts/setup-pickup-live.mjs",
+    "setup-driver-hire": "node ./scripts/setup-driver-hire.mjs",
     "fix-duplicate-emails": "node ./scripts/fix-duplicate-emails.mjs",
     "fix-duplicate-phones": "node ./scripts/fix-duplicate-phones.mjs",
     "android": "expo start --android",

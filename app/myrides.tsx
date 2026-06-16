@@ -1,9 +1,11 @@
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
+    Animated,
+    PanResponder,
     ScrollView,
     StyleSheet,
     Text,
@@ -16,6 +18,7 @@ import ProfileNavButton from './components/ProfileNavButton';
 import RideOwnerRow from './components/RideOwnerRow';
 import {
     cancelBooking,
+    completeRide,
     getBookingsForOwnerRides,
     getDisplayName,
     getRideIdsWithActiveBookings,
@@ -24,8 +27,10 @@ import {
     getUserOfferedRides,
     isCancelledBooking,
     normalizePhone,
+    parseRideDepartureTime,
     resolveOwnerInfo,
     resolveRelationId,
+    startRide,
 } from './config/api';
 import { getSession, refreshSessionFromServer } from './config/session';
 import { useUserStats } from '@/hooks/use-user-stats';
@@ -61,8 +66,9 @@ type RideItem = {
 
 const formatRideTime = (value?: string) => {
     if (!value) return 'Time TBD';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value;
+    const ts = parseRideDepartureTime(value);
+    if (Number.isNaN(ts)) return value;
+    const date = new Date(ts);
     return date.toLocaleString('en-IN', {
         weekday: 'short',
         hour: 'numeric',
@@ -70,6 +76,226 @@ const formatRideTime = (value?: string) => {
         hour12: true,
     });
 };
+
+// ─── Swipe-to-confirm slider ─────────────────────────────────────────────────
+const SLIDER_WIDTH = 280;
+const THUMB_SIZE = 52;
+const SWIPE_THRESHOLD = SLIDER_WIDTH - THUMB_SIZE - 8; // ~220px
+
+function SwipeSlider({
+    label,
+    onConfirm,
+    color,
+    disabled,
+}: {
+    label: string;
+    onConfirm: () => void;
+    color: string;
+    disabled?: boolean;
+}) {
+    const pan = useRef(new Animated.Value(0)).current;
+    const confirmed = useRef(false);
+
+    const panResponder = useRef(
+        PanResponder.create({
+            onStartShouldSetPanResponder: () => !disabled,
+            onMoveShouldSetPanResponder: () => !disabled,
+            onPanResponderMove: (_, gs) => {
+                const clamped = Math.max(0, Math.min(SWIPE_THRESHOLD, gs.dx));
+                pan.setValue(clamped);
+            },
+            onPanResponderRelease: (_, gs) => {
+                if (gs.dx >= SWIPE_THRESHOLD * 0.85 && !confirmed.current) {
+                    confirmed.current = true;
+                    Animated.timing(pan, {
+                        toValue: SWIPE_THRESHOLD,
+                        duration: 100,
+                        useNativeDriver: false,
+                    }).start(() => {
+                        onConfirm();
+                        setTimeout(() => {
+                            confirmed.current = false;
+                            Animated.timing(pan, {
+                                toValue: 0,
+                                duration: 250,
+                                useNativeDriver: false,
+                            }).start();
+                        }, 600);
+                    });
+                } else {
+                    Animated.spring(pan, {
+                        toValue: 0,
+                        useNativeDriver: false,
+                    }).start();
+                }
+            },
+        })
+    ).current;
+
+    const opacity = disabled ? 0.45 : 1;
+
+    return (
+        <View style={[sliderStyles.track, { backgroundColor: color + '22', opacity }]}>
+            <Text style={[sliderStyles.trackLabel, { color }]}>{label}</Text>
+            <Animated.View
+                style={[sliderStyles.thumb, { backgroundColor: color, transform: [{ translateX: pan }] }]}
+                {...panResponder.panHandlers}
+            >
+                <Text style={sliderStyles.thumbArrow}>›</Text>
+            </Animated.View>
+        </View>
+    );
+}
+
+const sliderStyles = StyleSheet.create({
+    track: {
+        width: SLIDER_WIDTH,
+        height: THUMB_SIZE + 8,
+        borderRadius: (THUMB_SIZE + 8) / 2,
+        justifyContent: 'center',
+        paddingHorizontal: 4,
+        overflow: 'hidden',
+        alignSelf: 'center',
+        marginTop: 12,
+    },
+    trackLabel: {
+        position: 'absolute',
+        alignSelf: 'center',
+        fontSize: 13,
+        fontWeight: '700',
+        letterSpacing: 0.3,
+    },
+    thumb: {
+        width: THUMB_SIZE,
+        height: THUMB_SIZE,
+        borderRadius: THUMB_SIZE / 2,
+        justifyContent: 'center',
+        alignItems: 'center',
+        elevation: 4,
+        shadowColor: '#000',
+        shadowOpacity: 0.2,
+        shadowRadius: 4,
+    },
+    thumbArrow: { color: '#fff', fontSize: 26, fontWeight: '900', marginTop: -2 },
+});
+
+// ─── Active ride card for owner ───────────────────────────────────────────────
+function ActiveRideCard({
+    ride,
+    onStart,
+    onEnd,
+    onLive,
+    starting,
+    ending,
+}: {
+    ride: RideItem;
+    onStart: () => void;
+    onEnd: () => void;
+    onLive: () => void;
+    starting: boolean;
+    ending: boolean;
+}) {
+    const inProgress = ride.tripStatus === 'in_progress';
+    const departureMs = ride.departureTime ? parseRideDepartureTime(ride.departureTime) : 0;
+    const minutesUntil = Math.round((departureMs - Date.now()) / 60000);
+    const isReadyToStart = minutesUntil <= 30;
+
+    return (
+        <View style={activeStyles.card}>
+            <View style={activeStyles.header}>
+                <View style={[activeStyles.badge, inProgress ? activeStyles.badgeLive : activeStyles.badgeSoon]}>
+                    <Text style={activeStyles.badgeText}>{inProgress ? '🟢 In progress' : '🕐 Upcoming'}</Text>
+                </View>
+                <Text style={activeStyles.time}>{ride.time}</Text>
+            </View>
+
+            <View style={activeStyles.routeBox}>
+                <Text style={activeStyles.routeLabel}>FROM</Text>
+                <Text style={activeStyles.routeValue}>{ride.from}</Text>
+                <View style={activeStyles.routeDivider} />
+                <Text style={activeStyles.routeLabel}>TO</Text>
+                <Text style={activeStyles.routeValue}>{ride.to}</Text>
+            </View>
+
+            {ride.riderBookings && ride.riderBookings.length > 0 ? (
+                <Text style={activeStyles.riderCount}>
+                    👥 {ride.riderBookings.length} rider{ride.riderBookings.length === 1 ? '' : 's'} booked
+                </Text>
+            ) : (
+                <Text style={activeStyles.riderCount}>No riders booked yet</Text>
+            )}
+
+            {inProgress ? (
+                <>
+                    <TouchableOpacity style={activeStyles.liveButton} onPress={onLive}>
+                        <Text style={activeStyles.liveButtonText}>📍 Open live map</Text>
+                    </TouchableOpacity>
+                    <SwipeSlider
+                        label="← Swipe to end ride"
+                        onConfirm={onEnd}
+                        color="#d32f2f"
+                        disabled={ending}
+                    />
+                    {ending ? <ActivityIndicator color="#d32f2f" style={{ marginTop: 8 }} /> : null}
+                </>
+            ) : isReadyToStart ? (
+                <>
+                    <SwipeSlider
+                        label="Swipe to start ride →"
+                        onConfirm={onStart}
+                        color="#34a853"
+                        disabled={starting}
+                    />
+                    {starting ? <ActivityIndicator color="#34a853" style={{ marginTop: 8 }} /> : null}
+                </>
+            ) : (
+                <Text style={activeStyles.notYet}>
+                    Start available 30 min before departure
+                    {minutesUntil > 0 ? ` (${minutesUntil} min away)` : ''}
+                </Text>
+            )}
+        </View>
+    );
+}
+
+const activeStyles = StyleSheet.create({
+    card: {
+        backgroundColor: '#fff',
+        borderRadius: 16,
+        padding: 16,
+        marginBottom: 12,
+        elevation: 3,
+        borderLeftWidth: 4,
+        borderLeftColor: '#1a73e8',
+    },
+    header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+    badge: { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
+    badgeLive: { backgroundColor: '#e8f5e9' },
+    badgeSoon: { backgroundColor: '#fff8e1' },
+    badgeText: { fontSize: 13, fontWeight: '700', color: '#333' },
+    time: { fontSize: 13, color: '#555', fontWeight: '600' },
+    routeBox: {
+        backgroundColor: '#f8fafc',
+        borderRadius: 10,
+        padding: 12,
+        marginBottom: 10,
+        borderWidth: 1,
+        borderColor: '#e5edf7',
+    },
+    routeLabel: { fontSize: 10, fontWeight: '700', color: '#6b7280', letterSpacing: 0.4 },
+    routeValue: { fontSize: 14, color: '#1f2937', marginTop: 2, marginBottom: 6 },
+    routeDivider: { height: 1, backgroundColor: '#e5edf7', marginVertical: 4 },
+    riderCount: { fontSize: 13, color: '#555', marginBottom: 4 },
+    liveButton: {
+        backgroundColor: '#1a73e8',
+        borderRadius: 10,
+        padding: 12,
+        alignItems: 'center',
+        marginTop: 8,
+    },
+    liveButtonText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+    notYet: { fontSize: 12, color: '#999', marginTop: 12, textAlign: 'center', fontStyle: 'italic' },
+});
 
 export default function MyRidesScreen() {
     const router = useRouter();
@@ -82,6 +308,46 @@ export default function MyRidesScreen() {
     const [userPhone, setUserPhone] = useState('');
     const [cancellingId, setCancellingId] = useState<string | null>(null);
     const [reloadKey, setReloadKey] = useState(0);
+    const [startingRideId, setStartingRideId] = useState<string | null>(null);
+    const [endingRideId, setEndingRideId] = useState<string | null>(null);
+
+    // Owner rides that are active (in_progress) or departing within 12 hours
+    const activeRides = upcomingRides.filter(
+        (r) =>
+            r.type === 'owner' &&
+            (r.tripStatus === 'in_progress' ||
+                (r.departureTime
+                    ? parseRideDepartureTime(r.departureTime) - Date.now() <= 12 * 60 * 60 * 1000
+                    : false))
+    );
+
+    const handleStartRide = async (ride: RideItem) => {
+        if (!ride.rideId || startingRideId) return;
+        setStartingRideId(ride.rideId);
+        try {
+            await startRide(ride.rideId, userPhone);
+            setReloadKey((k) => k + 1);
+            Alert.alert('Ride started', 'Riders can now see your live location.');
+        } catch (e: any) {
+            Alert.alert('Error', e?.message || 'Could not start ride.');
+        } finally {
+            setStartingRideId(null);
+        }
+    };
+
+    const handleEndRide = async (ride: RideItem) => {
+        if (!ride.rideId || endingRideId) return;
+        setEndingRideId(ride.rideId);
+        try {
+            await completeRide(ride.rideId, userPhone);
+            setReloadKey((k) => k + 1);
+            Alert.alert('Ride completed', 'Live tracking has stopped for all riders.');
+        } catch (e: any) {
+            Alert.alert('Error', e?.message || 'Could not end ride.');
+        } finally {
+            setEndingRideId(null);
+        }
+    };
 
     const handleCancelBooking = (ride: RideItem, bookingId?: string) => {
         const id = bookingId || ride.bookingId;
@@ -196,7 +462,7 @@ export default function MyRidesScreen() {
                             rideFromRelation ||
                             allRides.find((r: any) => r.id?.toString() === rideIdStr);
                         const departure = ride?.departure_time;
-                        const isUpcoming = departure ? new Date(departure).getTime() >= now : true;
+                        const isUpcoming = departure ? parseRideDepartureTime(departure) >= now : true;
                         const driverRaw = ride?.driver_name || '';
                         const ownerInfo = await getOwnerInfo(driverRaw);
                         items.push({
@@ -221,7 +487,10 @@ export default function MyRidesScreen() {
 
                     for (const ride of offeredRides) {
                         const departure = ride.departure_time;
-                        const isUpcoming = departure ? new Date(departure).getTime() >= now : true;
+                        const tripStatus = String(ride.trip_status || 'scheduled');
+                        const isUpcoming =
+                            tripStatus === 'in_progress' ||
+                            (departure ? parseRideDepartureTime(departure) >= now : true);
                         const seats = Number(ride.available_seats) || 0;
                         const pricePerSeat = Number(ride.price_per_seat) || 0;
                         const rideIdStr = ride.id?.toString() || '';
@@ -240,7 +509,7 @@ export default function MyRidesScreen() {
                             pricePerSeat,
                             seats,
                             status: isUpcoming ? 'confirmed' : 'completed',
-                            tripStatus: String(ride.trip_status || 'scheduled'),
+                            tripStatus,
                             rideId: rideIdStr,
                             canEdit: isUpcoming && rideIdStr.length > 0 && !ridesWithBookings.has(rideIdStr),
                             riderBookings,
@@ -474,6 +743,28 @@ export default function MyRidesScreen() {
                     <ActivityIndicator size="large" color="#1a73e8" style={styles.loader} />
                 ) : (
                     <>
+                        {activeRides.length > 0 ? (
+                            <>
+                                <Text style={styles.sectionTitle}>Active rides</Text>
+                                {activeRides.map((ride) => (
+                                    <ActiveRideCard
+                                        key={ride.id}
+                                        ride={ride}
+                                        onStart={() => handleStartRide(ride)}
+                                        onEnd={() => handleEndRide(ride)}
+                                        onLive={() =>
+                                            router.push({
+                                                pathname: '/live-ride',
+                                                params: { rideId: ride.rideId || '', role: 'owner' },
+                                            })
+                                        }
+                                        starting={startingRideId === ride.rideId}
+                                        ending={endingRideId === ride.rideId}
+                                    />
+                                ))}
+                            </>
+                        ) : null}
+
                         <Text style={styles.sectionTitle}>Upcoming</Text>
                         {upcomingRides.length === 0 ? (
                             <View style={styles.emptyCard}>

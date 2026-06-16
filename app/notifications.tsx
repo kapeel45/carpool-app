@@ -24,6 +24,13 @@ export default function NotificationsScreen() {
             });
             return;
         }
+        if (ref?.type === 'hire_request') {
+            router.push({
+                pathname: '/hire-request',
+                params: { requestId: ref.id },
+            });
+            return;
+        }
         if (ref?.type === 'ride_live') {
             router.push({
                 pathname: '/live-ride',

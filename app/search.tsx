@@ -1,6 +1,6 @@
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LocationInput from './components/LocationInput';
@@ -68,13 +68,18 @@ export default function SearchScreen() {
     >({});
     const [seatsToBookByRideId, setSeatsToBookByRideId] = useState<Record<string, number>>({});
     const [bookingRideId, setBookingRideId] = useState<string | null>(null);
-    const [requestingPickupId, setRequestingPickupId] = useState<string | null>(null);
     const [pickupRequestedIds, setPickupRequestedIds] = useState<Set<string>>(new Set());
     const [pickupRequestIdByRideId, setPickupRequestIdByRideId] = useState<Record<string, string>>({});
+    // Always-current request ids + in-flight creation promises so Cancel works even
+    // while the background "send request" call is still resolving.
+    const pickupRequestIdRef = useRef<Record<string, string>>({});
+    const pendingPickupCreations = useRef<Record<string, Promise<string | null>>>({});
     const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(null);
     const [driverProfiles, setDriverProfiles] = useState<
         Record<string, { name: string; gender?: string; photoUrl?: string | null }>
     >({});
+    const [listViewMode, setListViewMode] = useState<'horizontal' | 'grid'>('horizontal');
+    const [formCollapsed, setFormCollapsed] = useState(false);
 
     const syncActiveBookings = async (phone: string) => {
         try {
@@ -109,11 +114,13 @@ export default function SearchScreen() {
             }
             setPickupRequestedIds(pendingRideIds);
             setPickupRequestIdByRideId(requestIdMap);
+            pickupRequestIdRef.current = { ...requestIdMap };
         } catch {
             setBookedIds(new Set());
             setBookingMetaByRideId({});
             setPickupRequestedIds(new Set());
             setPickupRequestIdByRideId({});
+            pickupRequestIdRef.current = {};
         }
     };
 
@@ -196,6 +203,7 @@ export default function SearchScreen() {
             setResolvedSearchTo(searchToCoords);
             setPickupRequestedIds(new Set());
             setSearched(true);
+            setFormCollapsed(true);
         } catch (error) {
             Alert.alert('Error', 'Could not fetch rides. Try again.');
         } finally {
@@ -203,18 +211,14 @@ export default function SearchScreen() {
         }
     };
 
-    const handleRequestNearby = async (item: any, match: NearbyRideMatch) => {
+    const handleRequestNearby = (item: any, match: NearbyRideMatch) => {
         const rideId = item.id.toString();
         const departureTs = parseRideDepartureTime(item.departure_time);
         if (!Number.isNaN(departureTs) && departureTs <= Date.now()) {
             Alert.alert('Ride started', 'This ride has already started and cannot be newly requested.');
             return;
         }
-        if (
-            pickupRequestedIds.has(rideId) ||
-            requestingPickupId === rideId ||
-            bookedIds.has(rideId)
-        ) {
+        if (pickupRequestedIds.has(rideId) || bookedIds.has(rideId)) {
             return;
         }
 
@@ -224,17 +228,24 @@ export default function SearchScreen() {
             return;
         }
 
-        setRequestingPickupId(rideId);
-        try {
+        if (!userPhone) {
+            Alert.alert('Login Required', 'Please log in first.');
+            router.push('/login');
+            return;
+        }
+
+        const seatsBooked = getSeatsToBook(rideId, seatsLeft);
+        const pricePerSeat = parseInt(item.price_per_seat, 10) || 0;
+        const ownerPhone = String(match.ride.driver_name || '');
+
+        // Optimistically show Call + Cancel immediately; send in the background.
+        setPickupRequestedIds((prev) => new Set(prev).add(rideId));
+
+        const creation = (async (): Promise<string | null> => {
             const session = await getSession();
             if (!session?.loggedIn) {
-                Alert.alert('Login Required', 'Please log in first.');
-                router.push('/login');
-                return;
+                throw new Error('Please log in first.');
             }
-            const seatsBooked = getSeatsToBook(rideId, seatsLeft);
-            const pricePerSeat = parseInt(item.price_per_seat, 10) || 0;
-            const ownerPhone = String(match.ride.driver_name || '');
             const request = await requestNearbyPickup({
                 rideId,
                 rideOwnerPhone: ownerPhone,
@@ -245,22 +256,28 @@ export default function SearchScreen() {
                 seatsBooked,
                 totalPrice: pricePerSeat * seatsBooked,
             });
-            setPickupRequestedIds((prev) => new Set(prev).add(rideId));
-            if (request?.id) {
-                setPickupRequestIdByRideId((prev) => ({
-                    ...prev,
-                    [rideId]: String(request.id),
-                }));
+            const id = request?.id ? String(request.id) : null;
+            if (id) {
+                pickupRequestIdRef.current[rideId] = id;
+                setPickupRequestIdByRideId((prev) => ({ ...prev, [rideId]: id }));
             }
-            Alert.alert(
-                'Request sent',
-                'The owner will review your pickup request. Once accepted, your ride is booked and you can pay.'
-            );
-        } catch (error: any) {
-            Alert.alert('Error', error?.message || 'Could not send request.');
-        } finally {
-            setRequestingPickupId(null);
-        }
+            return id;
+        })();
+
+        pendingPickupCreations.current[rideId] = creation;
+        creation
+            .catch((error: any) => {
+                // Roll back the optimistic state if the background send failed.
+                setPickupRequestedIds((prev) => {
+                    const next = new Set(prev);
+                    next.delete(rideId);
+                    return next;
+                });
+                Alert.alert('Error', error?.message || 'Could not send request.');
+            })
+            .finally(() => {
+                delete pendingPickupCreations.current[rideId];
+            });
     };
 
     const handlePayBooking = (rideId: string) => {
@@ -365,9 +382,22 @@ export default function SearchScreen() {
         }
     };
 
+    const clearPickupRequestState = (rideId: string) => {
+        delete pickupRequestIdRef.current[rideId];
+        setPickupRequestedIds((prev) => {
+            const next = new Set(prev);
+            next.delete(rideId);
+            return next;
+        });
+        setPickupRequestIdByRideId((prev) => {
+            const next = { ...prev };
+            delete next[rideId];
+            return next;
+        });
+    };
+
     const handleCancelPickupRequest = (rideId: string) => {
-        const requestId = pickupRequestIdByRideId[rideId];
-        if (!requestId || cancellingRequestId === rideId) return;
+        if (cancellingRequestId === rideId) return;
 
         Alert.alert(
             'Cancel request?',
@@ -380,17 +410,18 @@ export default function SearchScreen() {
                     onPress: async () => {
                         setCancellingRequestId(rideId);
                         try {
+                            // The background send may still be resolving — wait for its id.
+                            let requestId = pickupRequestIdRef.current[rideId];
+                            if (!requestId && pendingPickupCreations.current[rideId]) {
+                                requestId = (await pendingPickupCreations.current[rideId]) || '';
+                            }
+                            if (!requestId) {
+                                // Nothing reached the server (send failed) — just clear the UI.
+                                clearPickupRequestState(rideId);
+                                return;
+                            }
                             await cancelPickupRequest(requestId, userPhone);
-                            setPickupRequestedIds((prev) => {
-                                const next = new Set(prev);
-                                next.delete(rideId);
-                                return next;
-                            });
-                            setPickupRequestIdByRideId((prev) => {
-                                const next = { ...prev };
-                                delete next[rideId];
-                                return next;
-                            });
+                            clearPickupRequestState(rideId);
                         } catch (error: any) {
                             Alert.alert('Error', error?.message || 'Could not cancel request.');
                         } finally {
@@ -402,7 +433,7 @@ export default function SearchScreen() {
         );
     };
 
-    const handleCancelBooking = (rideId: string) => {
+    const handleDeleteRide = (rideId: string) => {
         Alert.alert(
             'Cancel Booking?',
             'Are you sure you want to cancel this booking?',
@@ -470,7 +501,6 @@ export default function SearchScreen() {
         const bookingTotal = pricePerSeat * seatsToBook;
         const bookedMeta = bookingMetaByRideId[rideId];
         const pickupRequested = pickupRequestedIds.has(rideId);
-        const requestingPickup = requestingPickupId === rideId;
         const departureTs = parseRideDepartureTime(item.departure_time);
         const rideStarted = !Number.isNaN(departureTs) && departureTs <= Date.now();
         const needsPayment =
@@ -479,7 +509,13 @@ export default function SearchScreen() {
             String(bookedMeta.paymentStatus || 'pending').toLowerCase() !== 'paid';
 
         return (
-            <View key={nearby ? `nearby-${rideId}` : rideId} style={styles.rideCard}>
+            <View
+                key={nearby ? `nearby-${rideId}` : rideId}
+                style={[
+                    styles.rideCard,
+                    listViewMode === 'horizontal' ? styles.rideCardHorizontal : styles.rideCardGrid,
+                ]}
+            >
                 {nearby ? (
                     <View style={styles.nearbyBadgeRow}>
                         <Text style={styles.nearbyBadge}>
@@ -500,24 +536,6 @@ export default function SearchScreen() {
                 <View style={styles.rideMiddle}>
                     {searched && from && to ? (
                         <View style={styles.routeCompareBox}>
-                            <Text style={styles.routeCompareHeading}>Your route</Text>
-                            <View style={styles.routeCompareRow}>
-                                <View style={[styles.routeDot, styles.routeDotStart]} />
-                                <View style={styles.routeCompareText}>
-                                    <Text style={styles.routePointLabel}>Your start</Text>
-                                    <Text style={styles.routePointValue}>{from}</Text>
-                                </View>
-                            </View>
-                            <View style={styles.routeCompareRow}>
-                                <View style={[styles.routeDot, styles.routeDotEnd]} />
-                                <View style={styles.routeCompareText}>
-                                    <Text style={styles.routePointLabel}>Your end</Text>
-                                    <Text style={styles.routePointValue}>{to}</Text>
-                                </View>
-                            </View>
-
-                            <View style={styles.routeCompareDivider} />
-
                             <Text style={styles.routeCompareHeading}>Ride route</Text>
                             <View style={styles.routeCompareRow}>
                                 <View style={[styles.routeDot, styles.routeDotStart]} />
@@ -604,7 +622,7 @@ export default function SearchScreen() {
                                 <View style={styles.bookedDivider} />
                                 <TouchableOpacity
                                     style={styles.bookedPart}
-                                    onPress={() => handleCancelBooking(rideId)}
+                                    onPress={() => handleDeleteRide(rideId)}
                                 >
                                     <Text style={styles.bookText}>Cancel</Text>
                                 </TouchableOpacity>
@@ -620,7 +638,7 @@ export default function SearchScreen() {
                             <View style={styles.bookedDivider} />
                             <TouchableOpacity
                                 style={styles.bookedPart}
-                                onPress={() => handleCancelBooking(rideId)}
+                                onPress={() => handleDeleteRide(rideId)}
                             >
                                 <Text style={styles.bookText}>Cancel</Text>
                             </TouchableOpacity>
@@ -635,13 +653,7 @@ export default function SearchScreen() {
                             <Text style={styles.bookText}>Started</Text>
                         </View>
                     ) : nearby ? (
-                        requestingPickup ? (
-                            <View style={[styles.bookButton, styles.pendingButton]}>
-                                <Text style={styles.pendingBookText} numberOfLines={1}>
-                                    Sending…
-                                </Text>
-                            </View>
-                        ) : pickupRequested ? (
+                        pickupRequested ? (
                             <View style={[styles.bookButton, styles.pendingButton, styles.bookedToggle]}>
                                 <TouchableOpacity
                                     style={styles.pendingActionPart}
@@ -695,6 +707,31 @@ export default function SearchScreen() {
         );
     };
 
+    const combinedRideResults = useMemo(
+        () => [
+            ...rides.map((ride) => ({ ride, nearby: undefined as NearbyRideMatch | undefined })),
+            ...nearbyRides.map((nearby) => ({ ride: nearby.ride, nearby })),
+        ],
+        [rides, nearbyRides]
+    );
+
+    const renderRideList = (items: any[], render: (item: any) => any) => {
+        if (listViewMode === 'horizontal') {
+            return (
+                <ScrollView
+                    horizontal
+                    nestedScrollEnabled
+                    directionalLockEnabled
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.horizontalListContent}
+                >
+                    {items.map(render)}
+                </ScrollView>
+            );
+        }
+        return <View style={styles.gridList}>{items.map(render)}</View>;
+    };
+
     return (
         <View style={styles.container}>
             <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
@@ -710,58 +747,67 @@ export default function SearchScreen() {
                 </View>
             </View>
 
-            <View style={styles.searchContainer}>
-                <View style={styles.routeMapTop}>
-                    {from && to ? (
-                        <RideMap
-                            fromLocation={from}
-                            toLocation={to}
-                            fromCoords={fromCoords}
-                            toCoords={toCoords}
-                            height={180}
-                        />
-                    ) : (
-                        <View style={styles.mapPlaceholder}>
-                            <Text style={styles.mapPlaceholderIcon}>🗺️</Text>
-                            <Text style={styles.mapPlaceholderText}>Route map</Text>
-                            <Text style={styles.mapPlaceholderSub}>
-                                Enter pickup and destination below
-                            </Text>
-                        </View>
-                    )}
-                </View>
-
-                <View style={styles.routeCard}>
-                    <View style={styles.routeLine} pointerEvents="none" />
-                    <View style={[styles.fieldWrap, styles.fieldWrapTop]}>
-                        <LocationInput
-                            variant="pickup"
-                            placeholder="From where?"
-                            onLocationSelect={(sel) => {
-                                setFrom(sel.address);
-                                setFromCoords(sel.coords || null);
-                            }}
-                        />
+            {searched && formCollapsed ? (
+                <TouchableOpacity
+                    style={styles.compactSearch}
+                    activeOpacity={0.8}
+                    onPress={() => setFormCollapsed(false)}
+                >
+                    <View style={styles.compactRouteWrap}>
+                        <Text style={styles.compactRoute} numberOfLines={1}>
+                            {from || 'Pickup'} → {to || 'Destination'}
+                        </Text>
+                        <Text style={styles.compactSub}>
+                            {combinedRideResults.length} ride{combinedRideResults.length === 1 ? '' : 's'} on your route
+                        </Text>
                     </View>
-                    <View style={styles.fieldWrap}>
-                        <LocationInput
-                            variant="dropoff"
-                            placeholder="Going to?"
-                            onLocationSelect={(sel) => {
-                                setTo(sel.address);
-                                setToCoords(sel.coords || null);
-                            }}
-                        />
+                    <View style={styles.editSearchBtn}>
+                        <Text style={styles.editSearchText}>Edit</Text>
                     </View>
-                </View>
-
-                <TouchableOpacity style={styles.searchButton} onPress={handleSearch}>
-                    <Text style={styles.searchText}>Search Rides 🔍</Text>
                 </TouchableOpacity>
-                <Text style={styles.searchHint}>
-                    Shows exact route matches plus rides within {NEARBY_PICKUP_RADIUS_MILES} miles on your route
-                </Text>
-            </View>
+            ) : (
+                <View style={styles.searchContainer}>
+                    {from && to ? (
+                        <View style={styles.routeMapTop}>
+                            <RideMap
+                                fromLocation={from}
+                                toLocation={to}
+                                fromCoords={fromCoords}
+                                toCoords={toCoords}
+                                height={120}
+                            />
+                        </View>
+                    ) : null}
+
+                    <View style={styles.routeCard}>
+                        <View style={styles.routeLine} pointerEvents="none" />
+                        <View style={[styles.fieldWrap, styles.fieldWrapTop]}>
+                            <LocationInput
+                                variant="pickup"
+                                placeholder="From where?"
+                                onLocationSelect={(sel) => {
+                                    setFrom(sel.address);
+                                    setFromCoords(sel.coords || null);
+                                }}
+                            />
+                        </View>
+                        <View style={styles.fieldWrap}>
+                            <LocationInput
+                                variant="dropoff"
+                                placeholder="Going to?"
+                                onLocationSelect={(sel) => {
+                                    setTo(sel.address);
+                                    setToCoords(sel.coords || null);
+                                }}
+                            />
+                        </View>
+                    </View>
+
+                    <TouchableOpacity style={styles.searchButton} onPress={handleSearch}>
+                        <Text style={styles.searchText}>Search Rides 🔍</Text>
+                    </TouchableOpacity>
+                </View>
+            )}
 
             <ScrollView
                 style={styles.scroll}
@@ -773,7 +819,7 @@ export default function SearchScreen() {
                     <ActivityIndicator size="large" color="#1a73e8" style={styles.loader} />
                 )}
 
-                {searched && !loading && rides.length === 0 && nearbyRides.length === 0 && (
+                {searched && !loading && combinedRideResults.length === 0 && (
                     <View style={styles.empty}>
                         <Text style={styles.emptyIcon}>🚗</Text>
                         <Text style={styles.emptyText}>
@@ -782,30 +828,55 @@ export default function SearchScreen() {
                     </View>
                 )}
 
-                {searched && !loading && rides.length > 0 ? (
-                    <>
-                        <Text style={styles.sectionTitle}>Exact route matches</Text>
-                        {rides.map((item) => renderRideCard(item))}
-                    </>
-                ) : null}
-
-                {searched && !loading && rides.length === 0 && nearbyRides.length > 0 ? (
-                    <View style={styles.emptyHint}>
-                        <Text style={styles.emptyHintText}>
-                            No exact matches — nearby rides on your route below
-                        </Text>
+                {searched && !loading && combinedRideResults.length > 0 ? (
+                    <View style={styles.viewToggleRow}>
+                        <Text style={styles.viewToggleLabel}>View</Text>
+                        <View style={styles.viewToggleWrap}>
+                            <TouchableOpacity
+                                style={[
+                                    styles.viewToggleButton,
+                                    listViewMode === 'horizontal' && styles.viewToggleButtonActive,
+                                ]}
+                                onPress={() => setListViewMode('horizontal')}
+                            >
+                                <Text
+                                    style={[
+                                        styles.viewToggleText,
+                                        listViewMode === 'horizontal' && styles.viewToggleTextActive,
+                                    ]}
+                                >
+                                    Horizontal
+                                </Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[
+                                    styles.viewToggleButton,
+                                    listViewMode === 'grid' && styles.viewToggleButtonActive,
+                                ]}
+                                onPress={() => setListViewMode('grid')}
+                            >
+                                <Text
+                                    style={[
+                                        styles.viewToggleText,
+                                        listViewMode === 'grid' && styles.viewToggleTextActive,
+                                    ]}
+                                >
+                                    Grid
+                                </Text>
+                            </TouchableOpacity>
+                        </View>
                     </View>
                 ) : null}
 
-                {searched && !loading && nearbyRides.length > 0 ? (
+                {searched && !loading && combinedRideResults.length > 0 ? (
                     <>
-                        <Text style={styles.sectionTitle}>
-                            Nearby rides (within {NEARBY_PICKUP_RADIUS_MILES} mi)
-                        </Text>
+                        <Text style={styles.sectionTitle}>Matching rides</Text>
                         <Text style={styles.sectionSub}>
-                            Same direction — tap Request to ask the owner for a pickup
+                            Exact and nearby rides are shown together in one list
                         </Text>
-                        {nearbyRides.map((match) => renderRideCard(match.ride, match))}
+                        {renderRideList(combinedRideResults, (entry) =>
+                            renderRideCard(entry.ride, entry.nearby)
+                        )}
                     </>
                 ) : null}
 
@@ -861,9 +932,10 @@ const styles = StyleSheet.create({
     searchContainer: {
         backgroundColor: '#fff',
         borderRadius: 16,
-        padding: 16,
+        padding: 14,
         marginHorizontal: 20,
-        marginBottom: 12,
+        marginTop: 12,
+        marginBottom: 8,
         elevation: 2,
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 2 },
@@ -872,6 +944,32 @@ const styles = StyleSheet.create({
         zIndex: 9999,
         overflow: 'visible',
     },
+    compactSearch: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#fff',
+        borderRadius: 12,
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        marginHorizontal: 20,
+        marginTop: 12,
+        marginBottom: 8,
+        elevation: 2,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.08,
+        shadowRadius: 4,
+    },
+    compactRouteWrap: { flex: 1, paddingRight: 12 },
+    compactRoute: { fontSize: 15, fontWeight: '700', color: '#222' },
+    compactSub: { fontSize: 12, color: '#666', marginTop: 2 },
+    editSearchBtn: {
+        backgroundColor: '#eaf1fe',
+        borderRadius: 8,
+        paddingHorizontal: 14,
+        paddingVertical: 8,
+    },
+    editSearchText: { color: '#1a73e8', fontWeight: '700', fontSize: 13 },
     routeCard: {
         width: '100%',
         position: 'relative',
@@ -896,9 +994,9 @@ const styles = StyleSheet.create({
     searchButton: {
         backgroundColor: '#1a73e8',
         borderRadius: 12,
-        padding: 14,
+        padding: 12,
         alignItems: 'center',
-        marginTop: 12,
+        marginTop: 10,
         shadowColor: '#1a73e8',
         shadowOffset: { width: 0, height: 3 },
         shadowOpacity: 0.25,
@@ -914,7 +1012,7 @@ const styles = StyleSheet.create({
         lineHeight: 17,
     },
     routeMapPreview: { marginTop: 16 },
-    routeMapTop: { marginBottom: 16 },
+    routeMapTop: { marginBottom: 12 },
     routeMapLabel: {
         fontSize: 13,
         fontWeight: '700',
@@ -943,8 +1041,38 @@ const styles = StyleSheet.create({
     searchPromptText: { fontSize: 14, color: '#666', textAlign: 'center' },
     sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#333', marginBottom: 8, marginTop: 4 },
     sectionSub: { fontSize: 13, color: '#666', marginBottom: 12 },
+    viewToggleRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 12,
+        marginTop: 6,
+    },
+    viewToggleLabel: { fontSize: 13, fontWeight: '600', color: '#555' },
+    viewToggleWrap: {
+        flexDirection: 'row',
+        backgroundColor: '#eef3fb',
+        borderRadius: 10,
+        padding: 3,
+    },
+    viewToggleButton: {
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 8,
+    },
+    viewToggleButtonActive: { backgroundColor: '#1a73e8' },
+    viewToggleText: { fontSize: 12, fontWeight: '700', color: '#567' },
+    viewToggleTextActive: { color: '#fff' },
     loader: { marginVertical: 40 },
     rideCard: { backgroundColor: '#fff', borderRadius: 16, padding: 16, marginBottom: 12, elevation: 2, overflow: 'visible' },
+    rideCardHorizontal: { width: 320, marginRight: 12 },
+    rideCardGrid: { width: '48%' },
+    horizontalListContent: { paddingBottom: 4, paddingRight: 8 },
+    gridList: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        justifyContent: 'space-between',
+    },
     nearbyBadgeRow: { marginBottom: 10 },
     nearbyBadge: {
         alignSelf: 'flex-start',
@@ -1047,11 +1175,11 @@ const styles = StyleSheet.create({
         backgroundColor: '#34a853',
         paddingHorizontal: 0,
         paddingVertical: 0,
-        width: 136,
+        width: 190,
     },
     pendingButton: {
         backgroundColor: '#fff9c4',
-        width: 120,
+        width: 160,
         paddingHorizontal: 0,
         paddingVertical: 0,
     },

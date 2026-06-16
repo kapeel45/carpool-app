@@ -1,4 +1,15 @@
 import axios from 'axios';
+import type { DriverHireListing, DriverHireRequest } from './driver-hire';
+import {
+    calcAvailableUntil,
+    estimateHireTotal,
+    formatHireTripDate,
+    isListingExpired,
+    isValidHireConfirmationCode,
+    MIN_HIRE_HOURS,
+    normalizeHireConfirmationCode,
+    normalizeHireHours,
+} from './driver-hire';
 import { assertOfficialWorkEmail } from './work-email';
 
 const API_URL = process.env.EXPO_PUBLIC_DIRECTUS_URL || 'http://192.168.1.25:8055';
@@ -34,7 +45,7 @@ export const parseDirectusDatetime = (value?: string | null): number => {
 
 /** Re-check Find Rides list this often so past departures drop off. */
 export const FIND_RIDE_REFRESH_MS = 60 * 1000;
-const FIND_RIDE_HIDE_AFTER_MS = 60 * 60 * 1000; // hide rides 1 hour after departure
+const FIND_RIDE_CLOCK_SKEW_MS = 2 * 60 * 1000; // allow tiny client/server clock drift only
 
 export const parseRideDepartureTime = parseDirectusDatetime;
 
@@ -51,7 +62,8 @@ export const isRideSearchable = (ride: {
     if (ride.status && ride.status !== 'active') return false;
     const departure = parseRideDepartureTime(ride.departure_time);
     if (Number.isNaN(departure)) return false;
-    return departure + FIND_RIDE_HIDE_AFTER_MS > Date.now();
+    // Show only upcoming rides; hide rides once they have started (with tiny skew buffer).
+    return departure >= Date.now() - FIND_RIDE_CLOCK_SKEW_MS;
 };
 
 export const filterSearchableRides = <T extends { departure_time?: string | null; status?: string | null }>(
@@ -1216,6 +1228,9 @@ export const parseNotificationReference = (bookingId?: string | null) => {
     if (raw.startsWith('pickup_request:')) {
         return { type: 'pickup_request' as const, id: raw.replace('pickup_request:', '') };
     }
+    if (raw.startsWith('hire_request:')) {
+        return { type: 'hire_request' as const, id: raw.replace('hire_request:', '') };
+    }
     if (raw.startsWith('ride_live:')) {
         return { type: 'ride_live' as const, id: raw.replace('ride_live:', '') };
     }
@@ -1591,7 +1606,7 @@ export const getUserBookings = async (phone: string) => {
             params: {
                 ...params,
                 fields:
-                    'id,ride_id,ride_id.from_location,ride_id.to_location,ride_id.driver_name,total_price,seats_booked,payment_status,status,date_created,rider_name,rider_phone',
+                    'id,ride_id,ride_id.from_location,ride_id.to_location,ride_id.driver_name,ride_id.departure_time,total_price,seats_booked,payment_status,status,date_created,rider_name,rider_phone',
             },
         });
         return filterActiveBookings(response.data?.data || []);
@@ -1792,6 +1807,436 @@ export const getCarModelsByBrand = async (brand: string): Promise<string[]> => {
                 .filter(Boolean)
         ),
     ].sort();
+};
+
+export type { DriverHireListing, DriverHireRequest } from './driver-hire';
+export {
+    calcAvailableUntil,
+    estimateHireTotal,
+    formatAvailableUntil,
+    formatHireConfirmationCode,
+    formatHireTripDate,
+    HIRE_VISIBLE_DAY_OPTIONS,
+    DEFAULT_HIRE_VISIBLE_DAYS,
+    isListingExpired,
+    isValidHireConfirmationCode,
+    MIN_HIRE_HOURS,
+    normalizeHireConfirmationCode,
+    normalizeHireHours,
+    sanitizeHireRequestForViewer,
+} from './driver-hire';
+
+export const getDriverHireListings = async () => {
+    try {
+        const response = await api.get('/items/driver_hire_listings', {
+            params: {
+                fields: '*',
+                'filter[status][_eq]': 'active',
+                sort: '-id',
+                limit: 100,
+            },
+        });
+        const rows = (response.data?.data || []) as DriverHireListing[];
+        const now = new Date();
+        const expired: string[] = [];
+        const active: DriverHireListing[] = [];
+        for (const row of rows) {
+            if (row.status !== 'active') continue;
+            if (row.available_until) {
+                const until = new Date(
+                    row.available_until.includes('T') ? row.available_until : `${row.available_until}T23:59:59`
+                );
+                if (until < now) {
+                    expired.push(String(row.id));
+                    continue;
+                }
+            }
+            active.push(row);
+        }
+        // auto-set expired listings to inactive (best-effort, no await needed)
+        for (const id of expired) {
+            api.patch(`/items/driver_hire_listings/${id}`, { status: 'inactive' }).catch(() => {});
+        }
+        return active;
+    } catch (error) {
+        console.warn('getDriverHireListings failed:', error);
+        return [];
+    }
+};
+
+export const getMyDriverHireListing = async (phone: string) => {
+    const normalized = normalizePhone(phone);
+    if (normalized.length !== 10) return null;
+    try {
+        const response = await api.get('/items/driver_hire_listings', {
+            params: {
+                fields: '*',
+                'filter[driver_phone][_eq]': normalized,
+                limit: 1,
+            },
+        });
+        const rows = (response.data?.data || []) as DriverHireListing[];
+        const row = rows[0] || null;
+        // auto-expire if needed
+        if (row && row.status === 'active' && isListingExpired(row)) {
+            api.patch(`/items/driver_hire_listings/${row.id}`, { status: 'inactive' }).catch(() => {});
+            return { ...row, status: 'inactive' } as DriverHireListing;
+        }
+        return row;
+    } catch (error) {
+        console.warn('getMyDriverHireListing failed:', error);
+        return null;
+    }
+};
+
+export const upsertDriverHireListing = async (
+    phone: string,
+    name: string,
+    data: {
+        title: string;
+        intro?: string;
+        services?: string;
+        rate_per_shift?: number;
+        food_allowance?: number;
+        food_note?: string;
+        visible_days?: number;
+        status?: string;
+    }
+) => {
+    const normalized = normalizePhone(phone);
+    if (normalized.length !== 10) {
+        throw new Error('Add a valid 10-digit phone number in your profile before posting.');
+    }
+    const existing = await getMyDriverHireListing(normalized);
+    const visibleDays = Math.max(1, Number(data.visible_days) || 7);
+    const isActive = data.status !== 'inactive';
+    const payload = {
+        driver_phone: normalized,
+        driver_name: name?.trim() || normalized,
+        title: data.title.trim(),
+        intro: data.intro?.trim() || '',
+        services: data.services?.trim() || '',
+        rate_per_shift: Math.max(0, Number(data.rate_per_shift) || 0),
+        food_allowance: Math.max(0, Number(data.food_allowance) || 0),
+        food_note: data.food_note?.trim() || '',
+        visible_days: visibleDays,
+        available_until: isActive ? calcAvailableUntil(visibleDays) : (existing?.available_until ?? null),
+        status: isActive ? 'active' : 'inactive',
+    };
+    if (existing?.id) {
+        const response = await api.patch(`/items/driver_hire_listings/${existing.id}`, payload);
+        return response.data?.data;
+    }
+    const response = await api.post('/items/driver_hire_listings', payload);
+    return response.data?.data;
+};
+
+export const createDriverHireRequest = async (params: {
+    listingId: string;
+    listing: Pick<DriverHireListing, 'driver_phone' | 'driver_name' | 'rate_per_shift'>;
+    clientPhone: string;
+    clientName: string;
+    tripDate: Date;
+    startTime?: string;
+    startLocation?: string;
+    endLocation?: string;
+    hours: number;
+    routeNote?: string;
+    confirmationCode: string;
+}) => {
+    const driverPhone = normalizePhone(params.listing.driver_phone);
+    const clientPhone = normalizePhone(params.clientPhone);
+    if (driverPhone.length !== 10 || clientPhone.length !== 10) {
+        throw new Error('Valid phone numbers are required.');
+    }
+    if (driverPhone === clientPhone) {
+        throw new Error('You cannot request your own listing.');
+    }
+
+    const hours = normalizeHireHours(params.hours);
+    const confirmationCode = normalizeHireConfirmationCode(params.confirmationCode);
+    if (!isValidHireConfirmationCode(confirmationCode)) {
+        throw new Error('Enter a 4-digit confirmation code to share with the driver.');
+    }
+    const ratePerShift = Number(params.listing.rate_per_shift) || 1200;
+    const estimatedTotal = estimateHireTotal(hours, ratePerShift);
+    const tripDate = params.tripDate.toISOString().slice(0, 10);
+    const startTime = (params.startTime || '').trim();
+    const startLocation = (params.startLocation || '').trim();
+    const endLocation = (params.endLocation || '').trim();
+    if (!startLocation || !endLocation) {
+        throw new Error('Enter both the start and end ride locations.');
+    }
+
+    const existing = await getClientDriverHireRequestForListing(clientPhone, params.listingId);
+    if (existing?.status === 'pending') {
+        throw new Error('You already have a pending request for this driver.');
+    }
+    if (existing?.status === 'accepted') {
+        throw new Error('You already have an accepted booking with this driver.');
+    }
+
+    const response = await api.post('/items/driver_hire_requests', {
+        listing_id: String(params.listingId),
+        driver_phone: driverPhone,
+        driver_name: params.listing.driver_name || driverPhone,
+        client_phone: clientPhone,
+        client_name: params.clientName,
+        trip_date: tripDate,
+        start_time: startTime,
+        start_location: startLocation,
+        end_location: endLocation,
+        hours,
+        route_note: params.routeNote?.trim() || '',
+        estimated_total: estimatedTotal,
+        confirmation_code: confirmationCode,
+        status: 'pending',
+    });
+    const record = response.data?.data as DriverHireRequest | undefined;
+    if (!record?.id) {
+        throw new Error('Could not send hire request.');
+    }
+
+    const requestId = String(record.id);
+    const dateLabel = formatHireTripDate(tripDate);
+    const whenLabel = startTime ? `${dateLabel} at ${startTime}` : dateLabel;
+    await createAppNotification(
+        driverPhone,
+        'Driver hire request',
+        `${params.clientName || 'A client'} requested you for ${whenLabel} (${hours} hrs, est. ₹${estimatedTotal}) from ${startLocation} to ${endLocation}. Ask them for their 4-digit code to accept.`,
+        `hire_request:${requestId}`
+    );
+    await createAppNotification(
+        clientPhone,
+        'Hire request sent',
+        `Your request was sent for ${dateLabel} (${hours} hrs). Your confirmation code is ${confirmationCode} — share it with the driver when they accept.`,
+        `hire_request:${requestId}`
+    );
+
+    return record;
+};
+
+export const getDriverHireRequestById = async (id: string): Promise<DriverHireRequest | null> => {
+    try {
+        const response = await api.get(`/items/driver_hire_requests/${id}`);
+        return response.data?.data || null;
+    } catch {
+        return null;
+    }
+};
+
+export const getClientDriverHireRequestForListing = async (clientPhone: string, listingId: string) => {
+    const normalized = normalizePhone(clientPhone);
+    if (normalized.length !== 10 || !listingId) return null;
+
+    try {
+        const response = await api.get('/items/driver_hire_requests', {
+            params: {
+                fields: '*',
+                'filter[client_phone][_eq]': normalized,
+                'filter[listing_id][_eq]': String(listingId),
+                sort: '-id',
+                limit: 20,
+            },
+        });
+        const rows = (response.data?.data || []) as DriverHireRequest[];
+        const priority = (status?: string | null) => {
+            if (status === 'accepted') return 3;
+            if (status === 'pending') return 2;
+            if (status === 'rejected') return 1;
+            return 0;
+        };
+        let best: DriverHireRequest | null = null;
+        for (const row of rows) {
+            if (!best || priority(row.status) >= priority(best.status)) {
+                best = row;
+            }
+        }
+        return best;
+    } catch (error) {
+        console.warn('getClientDriverHireRequestForListing failed:', error);
+        return null;
+    }
+};
+
+export const getClientDriverHireRequests = async (clientPhone: string) => {
+    const normalized = normalizePhone(clientPhone);
+    if (normalized.length !== 10) return [];
+
+    try {
+        const response = await api.get('/items/driver_hire_requests', {
+            params: {
+                fields: '*',
+                'filter[client_phone][_eq]': normalized,
+                sort: '-id',
+                limit: 50,
+            },
+        });
+        return (response.data?.data || []) as DriverHireRequest[];
+    } catch (error) {
+        console.warn('getClientDriverHireRequests failed:', error);
+        return [];
+    }
+};
+
+export const getDriverHireRequestsForDriver = async (driverPhone: string, status?: string) => {
+    const normalized = normalizePhone(driverPhone);
+    if (normalized.length !== 10) return [];
+
+    try {
+        const params: Record<string, string | number> = {
+            fields: '*',
+            'filter[driver_phone][_eq]': normalized,
+            sort: '-id',
+            limit: 50,
+        };
+        if (status) {
+            params['filter[status][_eq]'] = status;
+        }
+        const response = await api.get('/items/driver_hire_requests', { params });
+        return (response.data?.data || []) as DriverHireRequest[];
+    } catch (error) {
+        console.warn('getDriverHireRequestsForDriver failed:', error);
+        return [];
+    }
+};
+
+export const getClientDriverHireRequestsByListingIds = async (
+    clientPhone: string,
+    listingIds: string[]
+) => {
+    const normalized = normalizePhone(clientPhone);
+    if (normalized.length !== 10 || listingIds.length === 0) return {} as Record<string, DriverHireRequest>;
+
+    try {
+        const response = await api.get('/items/driver_hire_requests', {
+            params: {
+                fields: '*',
+                'filter[client_phone][_eq]': normalized,
+                'filter[listing_id][_in]': listingIds.join(','),
+                sort: '-id',
+                limit: 100,
+            },
+        });
+        const rows = (response.data?.data || []) as DriverHireRequest[];
+        const priority = (status?: string | null) => {
+            if (status === 'accepted') return 3;
+            if (status === 'pending') return 2;
+            if (status === 'rejected') return 1;
+            return 0;
+        };
+        const map: Record<string, DriverHireRequest> = {};
+        for (const row of rows) {
+            const listingId = String(row.listing_id);
+            const existing = map[listingId];
+            if (!existing || priority(row.status) >= priority(existing.status)) {
+                map[listingId] = row;
+            }
+        }
+        return map;
+    } catch (error) {
+        console.warn('getClientDriverHireRequestsByListingIds failed:', error);
+        return {};
+    }
+};
+
+export const acceptDriverHireRequest = async (
+    requestId: string,
+    driverPhone: string,
+    confirmationCode: string
+) => {
+    const request = await getDriverHireRequestById(requestId);
+    if (!request) throw new Error('Hire request not found.');
+    if (normalizePhone(request.driver_phone) !== normalizePhone(driverPhone)) {
+        throw new Error('Not allowed to accept this request.');
+    }
+    if (request.status !== 'pending') {
+        throw new Error('This request was already handled.');
+    }
+
+    const enteredCode = normalizeHireConfirmationCode(confirmationCode);
+    const expectedCode = normalizeHireConfirmationCode(request.confirmation_code || '');
+    if (!isValidHireConfirmationCode(enteredCode)) {
+        throw new Error('Enter the 4-digit confirmation code from the client.');
+    }
+    if (enteredCode !== expectedCode) {
+        throw new Error('Incorrect confirmation code. Ask the client for their 4-digit code.');
+    }
+
+    await api.patch(`/items/driver_hire_requests/${requestId}`, { status: 'accepted' });
+
+    const clientPhone = normalizePhone(request.client_phone);
+    const dateLabel = formatHireTripDate(request.trip_date);
+    const hours = Number(request.hours) || MIN_HIRE_HOURS;
+    if (clientPhone.length === 10) {
+        await createAppNotification(
+            clientPhone,
+            'Driver hire accepted',
+            `Your driver accepted the request for ${dateLabel} (${hours} hrs). You can now call or message them.`,
+            `hire_request:${requestId}`
+        );
+    }
+
+    return request;
+};
+
+export const rejectDriverHireRequest = async (requestId: string, driverPhone: string) => {
+    const request = await getDriverHireRequestById(requestId);
+    if (!request) throw new Error('Hire request not found.');
+    if (normalizePhone(request.driver_phone) !== normalizePhone(driverPhone)) {
+        throw new Error('Not allowed to decline this request.');
+    }
+    if (request.status !== 'pending') {
+        throw new Error('This request was already handled.');
+    }
+
+    await api.patch(`/items/driver_hire_requests/${requestId}`, { status: 'rejected' });
+
+    const clientPhone = normalizePhone(request.client_phone);
+    const dateLabel = formatHireTripDate(request.trip_date);
+    if (clientPhone.length === 10) {
+        await createAppNotification(
+            clientPhone,
+            'Driver hire declined',
+            `The driver declined your request for ${dateLabel}. You can send a new request with different dates.`,
+            `hire_request:${requestId}`
+        );
+    }
+
+    return request;
+};
+
+export const cancelDriverHireRequest = async (requestId: string, byPhone: string) => {
+    const request = await getDriverHireRequestById(requestId);
+    if (!request) throw new Error('Hire request not found.');
+
+    const driverPhone = normalizePhone(request.driver_phone);
+    const clientPhone = normalizePhone(request.client_phone);
+    const canceller = normalizePhone(byPhone);
+    const isDriver = canceller === driverPhone;
+    const isClient = canceller === clientPhone;
+    if (!isDriver && !isClient) {
+        throw new Error('Not allowed to cancel this request.');
+    }
+    if (request.status !== 'pending' && request.status !== 'accepted') {
+        throw new Error('This request can no longer be cancelled.');
+    }
+
+    await api.patch(`/items/driver_hire_requests/${requestId}`, { status: 'cancelled' });
+
+    const dateLabel = formatHireTripDate(request.trip_date);
+    const otherPhone = isDriver ? clientPhone : driverPhone;
+    const byLabel = isDriver ? 'The driver' : 'The client';
+    if (otherPhone.length === 10) {
+        await createAppNotification(
+            otherPhone,
+            'Driver hire cancelled',
+            `${byLabel} cancelled the hire for ${dateLabel}.`,
+            `hire_request:${requestId}`
+        );
+    }
+
+    return request;
 };
 
 export const calculateSuggestedPrice = async (

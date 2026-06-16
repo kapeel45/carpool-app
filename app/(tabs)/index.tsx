@@ -6,8 +6,27 @@ import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import NotificationBell from '../components/NotificationBell';
 import ProfileNavButton from '../components/ProfileNavButton';
-import { getDisplayName, getFuelPrices } from '../config/api';
+import {
+  getDisplayName,
+  getFuelPrices,
+  getUserBookings,
+  getUserOfferedRides,
+  parseRideDepartureTime,
+} from '../config/api';
 import { getSession } from '../config/session';
+
+const formatRideDateTime = (value?: string | null) => {
+  const ts = parseRideDepartureTime(value);
+  if (Number.isNaN(ts)) return 'Time not available';
+  return new Date(ts).toLocaleString('en-IN', {
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+};
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -15,6 +34,9 @@ export default function HomeScreen() {
   const [fuelPrices, setFuelPrices] = useState<any[]>([]);
   const [userName, setUserName] = useState('');
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [recentBookings, setRecentBookings] = useState<any[]>([]);
+  const [recentOffered, setRecentOffered] = useState<any[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const { stats, loading: statsLoading } = useUserStats();
 
   useFocusEffect(
@@ -24,9 +46,24 @@ export default function HomeScreen() {
         if (session?.loggedIn) {
           setUserName(getDisplayName(session.name, session.phone));
           setIsLoggedIn(true);
+          setHistoryLoading(true);
+          try {
+            const [bookings, offered] = await Promise.all([
+              getUserBookings(session.phone),
+              getUserOfferedRides(session.phone),
+            ]);
+            setRecentBookings(bookings.slice(0, 3));
+            setRecentOffered(offered.slice(0, 3));
+          } catch {
+            // silent fail
+          } finally {
+            setHistoryLoading(false);
+          }
         } else {
           setUserName('');
           setIsLoggedIn(false);
+          setRecentBookings([]);
+          setRecentOffered([]);
         }
       };
       checkSession();
@@ -83,6 +120,12 @@ export default function HomeScreen() {
           <Text style={styles.offerButtonTitle}>Offer a Ride</Text>
           <Text style={styles.offerButtonSub}>Share your commute</Text>
         </TouchableOpacity>
+
+        <TouchableOpacity style={styles.hireButton} onPress={() => router.push('/hire-driver')}>
+          <Text style={styles.buttonIcon}>🧑‍✈️</Text>
+          <Text style={styles.hireButtonTitle}>Search or Offer Professional Drive</Text>
+          <Text style={styles.hireButtonSub}>Hire or offer driving services</Text>
+        </TouchableOpacity>
       </View>
 
       <TouchableOpacity onPress={() => router.push('/myrides')}>
@@ -130,6 +173,87 @@ export default function HomeScreen() {
           </View>
         </View>
       </TouchableOpacity>
+
+      {isLoggedIn ? (
+        <View style={styles.historySection}>
+          <View style={styles.historySectionHeader}>
+            <Text style={styles.historySectionTitle}>Carpool Booking History</Text>
+            <TouchableOpacity onPress={() => router.push('/(tabs)/analytics')}>
+              <Text style={styles.historySeeAll}>See all</Text>
+            </TouchableOpacity>
+          </View>
+          {historyLoading ? (
+            <ActivityIndicator size="small" color="#1a73e8" style={{ marginVertical: 12 }} />
+          ) : recentBookings.length === 0 && recentOffered.length === 0 ? (
+            <View style={styles.historyEmpty}>
+              <Text style={styles.historyEmptyText}>No carpool history yet.</Text>
+            </View>
+          ) : (
+            <>
+              {recentBookings.length > 0 ? (
+                <>
+                  <Text style={styles.historySubTitle}>Rides booked</Text>
+                  {recentBookings.map((booking) => {
+                    const ride = typeof booking.ride_id === 'object' && booking.ride_id ? booking.ride_id : null;
+                    const route = ride?.from_location && ride?.to_location
+                      ? `${ride.from_location} → ${ride.to_location}`
+                      : 'Carpool ride';
+                    return (
+                      <View key={booking.id} style={styles.historyCard}>
+                        <View style={styles.historyPointBox}>
+                          <Text style={styles.historyPointLabel}>START POINT</Text>
+                          <Text style={styles.historyPointValue}>
+                            {ride?.from_location || 'Not available'}
+                          </Text>
+                        </View>
+                        <View style={styles.historyPointBox}>
+                          <Text style={styles.historyPointLabel}>DESTINATION</Text>
+                          <Text style={styles.historyPointValue}>
+                            {ride?.to_location || 'Not available'}
+                          </Text>
+                        </View>
+                        <Text style={styles.historyCardMeta}>
+                          ₹{booking.total_price} · {booking.seats_booked || 1} seat(s) · {booking.payment_status || 'pending'}
+                        </Text>
+                        <Text style={styles.historyCardDateTime}>
+                          {formatRideDateTime(ride?.departure_time)}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                </>
+              ) : null}
+              {recentOffered.length > 0 ? (
+                <>
+                  <Text style={styles.historySubTitle}>Rides offered</Text>
+                  {recentOffered.map((ride) => (
+                    <View key={ride.id} style={styles.historyCard}>
+                      <View style={styles.historyPointBox}>
+                        <Text style={styles.historyPointLabel}>START POINT</Text>
+                        <Text style={styles.historyPointValue}>
+                          {ride.from_location || 'Not available'}
+                        </Text>
+                      </View>
+                      <View style={styles.historyPointBox}>
+                        <Text style={styles.historyPointLabel}>DESTINATION</Text>
+                        <Text style={styles.historyPointValue}>
+                          {ride.to_location || 'Not available'}
+                        </Text>
+                      </View>
+                      <Text style={styles.historyCardMeta}>
+                        ₹{ride.price_per_seat}/seat · {ride.available_seats} seats · {ride.status || 'active'}
+                      </Text>
+                      <Text style={styles.historyCardDateTime}>
+                        {formatRideDateTime(ride.departure_time)}
+                      </Text>
+                    </View>
+                  ))}
+                </>
+              ) : null}
+            </>
+          )}
+        </View>
+      ) : null}
       </ScrollView>
     </View>
   );
@@ -172,9 +296,33 @@ const styles = StyleSheet.create({
   buttonSub: { fontSize: 14, color: '#666', marginTop: 4 },
   offerButtonTitle: { fontSize: 20, fontWeight: 'bold', color: '#fff' },
   offerButtonSub: { fontSize: 14, color: '#fff', opacity: 0.85, marginTop: 4 },
+  hireButton: { backgroundColor: '#fff', borderRadius: 16, padding: 24, elevation: 3, borderWidth: 2, borderColor: '#1a73e8' },
+  hireButtonTitle: { fontSize: 20, fontWeight: 'bold', color: '#1a73e8' },
+  hireButtonSub: { fontSize: 14, color: '#666', marginTop: 4 },
   statsRow: { flexDirection: 'row', margin: 20, backgroundColor: '#fff', borderRadius: 16, padding: 20, justifyContent: 'space-around', elevation: 2 },
   statBox: { alignItems: 'center', flex: 1 },
   statsLoader: { flex: 1, paddingVertical: 8 },
   statNumber: { fontSize: 24, fontWeight: 'bold', color: '#1a73e8' },
   statLabel: { fontSize: 12, color: '#666', marginTop: 4, textAlign: 'center', minWidth: 56 },
+  historySection: { marginHorizontal: 20, marginBottom: 24 },
+  historySectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  historySectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#333' },
+  historySeeAll: { fontSize: 13, color: '#1a73e8', fontWeight: '600' },
+  historySubTitle: { fontSize: 13, fontWeight: '600', color: '#666', marginBottom: 6, marginTop: 4 },
+  historyCard: { backgroundColor: '#fff', borderRadius: 12, padding: 14, marginBottom: 8, elevation: 1 },
+  historyPointBox: {
+    backgroundColor: '#f8fafc',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#e5edf7',
+  },
+  historyPointLabel: { fontSize: 10, color: '#6b7280', fontWeight: '700', letterSpacing: 0.4 },
+  historyPointValue: { fontSize: 13, color: '#1f2937', marginTop: 4 },
+  historyCardMeta: { fontSize: 12, color: '#888', marginTop: 4 },
+  historyCardDateTime: { fontSize: 12, color: '#555', marginTop: 4 },
+  historyEmpty: { backgroundColor: '#fff', borderRadius: 12, padding: 16 },
+  historyEmptyText: { color: '#aaa', fontSize: 14, textAlign: 'center' },
 });

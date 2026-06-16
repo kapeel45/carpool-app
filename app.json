@@ -9,11 +9,13 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
+      "bundleIdentifier": "com.carpoolapp.mobile",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Allow CarpoolApp to show your location on the live ride map."
       }
     },
     "android": {
+      "package": "com.carpoolapp.mobile",
       "config": {
         "googleMaps": {
           "apiKey": "AIzaSyBhjfn1ZfqiR4zSGT8clhe2Yc-X8FYifF8"
