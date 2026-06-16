@@ -20,6 +20,7 @@ import {
     getRides,
     getUserBookings,
     getPickupRequestsForRider,
+    parseRideDepartureTime,
     requestNearbyPickup,
     resolveOwnerInfo,
     resolveRelationId,
@@ -204,6 +205,11 @@ export default function SearchScreen() {
 
     const handleRequestNearby = async (item: any, match: NearbyRideMatch) => {
         const rideId = item.id.toString();
+        const departureTs = parseRideDepartureTime(item.departure_time);
+        if (!Number.isNaN(departureTs) && departureTs <= Date.now()) {
+            Alert.alert('Ride started', 'This ride has already started and cannot be newly requested.');
+            return;
+        }
         if (
             pickupRequestedIds.has(rideId) ||
             requestingPickupId === rideId ||
@@ -290,6 +296,11 @@ export default function SearchScreen() {
 
     const handleBook = async (item: any) => {
         const rideId = item.id.toString();
+        const departureTs = parseRideDepartureTime(item.departure_time);
+        if (!Number.isNaN(departureTs) && departureTs <= Date.now()) {
+            Alert.alert('Ride started', 'This ride has already started and cannot be newly booked.');
+            return;
+        }
         if (bookedIds.has(rideId) || bookingRideId === rideId) return;
 
         const seatsLeft = getAvailableSeats(item);
@@ -460,6 +471,8 @@ export default function SearchScreen() {
         const bookedMeta = bookingMetaByRideId[rideId];
         const pickupRequested = pickupRequestedIds.has(rideId);
         const requestingPickup = requestingPickupId === rideId;
+        const departureTs = parseRideDepartureTime(item.departure_time);
+        const rideStarted = !Number.isNaN(departureTs) && departureTs <= Date.now();
         const needsPayment =
             isBooked &&
             bookedMeta &&
@@ -616,6 +629,10 @@ export default function SearchScreen() {
                     ) : isFull ? (
                         <View style={[styles.bookButton, styles.fullButton]}>
                             <Text style={styles.bookText}>Full</Text>
+                        </View>
+                    ) : rideStarted ? (
+                        <View style={[styles.bookButton, styles.fullButton]}>
+                            <Text style={styles.bookText}>Started</Text>
                         </View>
                     ) : nearby ? (
                         requestingPickup ? (

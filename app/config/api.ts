@@ -34,6 +34,7 @@ export const parseDirectusDatetime = (value?: string | null): number => {
 
 /** Re-check Find Rides list this often so past departures drop off. */
 export const FIND_RIDE_REFRESH_MS = 60 * 1000;
+const FIND_RIDE_HIDE_AFTER_MS = 60 * 60 * 1000; // hide rides 1 hour after departure
 
 export const parseRideDepartureTime = parseDirectusDatetime;
 
@@ -50,7 +51,7 @@ export const isRideSearchable = (ride: {
     if (ride.status && ride.status !== 'active') return false;
     const departure = parseRideDepartureTime(ride.departure_time);
     if (Number.isNaN(departure)) return false;
-    return departure > Date.now();
+    return departure + FIND_RIDE_HIDE_AFTER_MS > Date.now();
 };
 
 export const filterSearchableRides = <T extends { departure_time?: string | null; status?: string | null }>(
@@ -291,6 +292,7 @@ export const buildSessionFromUser = (user: {
     car_number?: string | null;
     car_color?: string | null;
     profile_photo?: unknown;
+    car_number_photo?: unknown;
 }) => ({
     loggedIn: true,
     userId: user.id,
@@ -303,11 +305,12 @@ export const buildSessionFromUser = (user: {
     carNumber: user.car_number,
     carColor: user.car_color,
     profilePhotoUrl: resolveProfilePhotoUrl(user.profile_photo),
+    carNumberPhotoUrl: resolveProfilePhotoUrl(user.car_number_photo),
 });
 
 /** Profile reads — never request mpin (often blocked); avoids fallback wiping email/car. */
 const USER_PROFILE_FIELDS =
-    'id,phone,name,email,email_verified,car_model,car_number,car_color,gender,profile_photo';
+    'id,phone,name,email,email_verified,car_model,car_number,car_color,gender,profile_photo,car_number_photo';
 const USER_AUTH_FIELDS = 'id,phone,name,mpin';
 
 /** Full profile from Directus (all fields the token can read). */
@@ -378,6 +381,10 @@ export const mergeSessionFromUser = (
             'profile_photo' in user
                 ? resolveProfilePhotoUrl(user.profile_photo)
                 : existing?.profilePhotoUrl,
+        carNumberPhotoUrl:
+            'car_number_photo' in user
+                ? resolveProfilePhotoUrl(user.car_number_photo)
+                : existing?.carNumberPhotoUrl,
     };
 };
 
@@ -467,6 +474,43 @@ export const uploadProfilePhoto = async (userId: string | number, localUri: stri
 
 export const clearProfilePhoto = async (userId: string | number) => {
     await api.patch(`/items/app_users/${userId}`, { profile_photo: null });
+};
+
+export const uploadCarNumberPhoto = async (userId: string | number, localUri: string) => {
+    const base = getApiBaseUrl();
+    if (!base || !ADMIN_TOKEN) {
+        throw new Error('Directus is not configured.');
+    }
+
+    const ext = localUri.split('.').pop()?.split('?')[0]?.toLowerCase() || 'jpg';
+    const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+
+    const formData = new FormData();
+    formData.append('file', {
+        uri: localUri,
+        type: mime,
+        name: `car-number-${userId}.${ext}`,
+    } as unknown as Blob);
+
+    const response = await fetch(`${base}/files`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${ADMIN_TOKEN}` },
+        body: formData,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        throw new Error(payload?.errors?.[0]?.message || 'Could not upload car number photo.');
+    }
+
+    const fileId = payload?.data?.id;
+    if (!fileId) throw new Error('Upload succeeded but file id was missing.');
+
+    await api.patch(`/items/app_users/${userId}`, { car_number_photo: fileId });
+    return { fileId: String(fileId), url: resolveProfilePhotoUrl(fileId) };
+};
+
+export const clearCarNumberPhoto = async (userId: string | number) => {
+    await api.patch(`/items/app_users/${userId}`, { car_number_photo: null });
 };
 
 export const canOfferRides = (session: {
@@ -615,7 +659,14 @@ export const updateUserProfile = async (userId: string, data: Record<string, unk
         await assertEmailAvailable(payload.email as string, userId);
     }
 
-    const optionalFields = ['gender', 'car_model', 'car_number', 'car_color', 'email_verified'];
+    const optionalFields = [
+        'gender',
+        'car_model',
+        'car_number',
+        'car_color',
+        'car_number_photo',
+        'email_verified',
+    ];
     let attempt: Record<string, unknown> = { ...payload };
 
     for (let i = 0; i <= optionalFields.length; i++) {
@@ -1393,6 +1444,24 @@ export const cancelBooking = async (bookingId: string, cancelledByPhone?: string
 export const getBookingById = async (id: string) => {
     const response = await api.get(`/items/bookings/${id}?fields=*,ride_id.*`);
     return response.data.data;
+};
+
+export const verifyBookingCarNumber = async (
+    bookingId: string,
+    riderPhone: string,
+    status: 'correct' | 'different'
+) => {
+    const booking = await getBookingById(bookingId);
+    if (!booking) throw new Error('Booking not found.');
+    if (normalizePhone(String(booking.rider_phone || '')) !== normalizePhone(riderPhone)) {
+        throw new Error('Not allowed to verify this booking.');
+    }
+    const response = await api.patch(`/items/bookings/${bookingId}`, {
+        car_number_verified_by_rider: status === 'correct',
+        car_number_verification_note: status,
+        car_number_verified_at: new Date().toISOString(),
+    });
+    return response.data?.data || booking;
 };
 
 export const getRideById = async (id: string) => {

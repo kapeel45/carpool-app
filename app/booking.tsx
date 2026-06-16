@@ -15,8 +15,11 @@ import {
     isCancelledBooking,
     markBookingPaid,
     normalizePhone,
+    findUserByPhone,
+    resolveProfilePhotoUrl,
     resolveOwnerInfo,
     resolveRelationId,
+    verifyBookingCarNumber,
 } from './config/api';
 import { getSession } from './config/session';
 
@@ -31,6 +34,9 @@ type BookingDetails = {
     availableSeats: number;
     seatsBooked: number;
     paymentStatus: string;
+    ownerCarNumber?: string;
+    ownerCarNumberPhotoUrl?: string | null;
+    riderCarVerification?: 'correct' | 'different' | null;
 };
 
 const formatRideTime = (value?: string) => {
@@ -56,6 +62,7 @@ const buildDetailsFromRide = async (
 ) => {
     const driverRaw = ride?.driver_name || '';
     const ownerInfo = await resolveOwnerInfo(driverRaw);
+    const ownerUser = await findUserByPhone(driverRaw);
     const pricePerSeat = options?.pricePerSeat ?? (Number(ride?.price_per_seat) || 0);
     return {
         from: ride?.from_location || 'Pickup',
@@ -68,6 +75,9 @@ const buildDetailsFromRide = async (
         availableSeats: getAvailableSeats(ride),
         seatsBooked: options?.seatsBooked ?? 1,
         paymentStatus: options?.paymentStatus || 'pending',
+        ownerCarNumber: String(ownerUser?.car_number || ''),
+        ownerCarNumberPhotoUrl: resolveProfilePhotoUrl(ownerUser?.car_number_photo),
+        riderCarVerification: null,
     };
 };
 
@@ -100,6 +110,7 @@ export default function BookingScreen() {
     const [isOwnerViewer, setIsOwnerViewer] = useState(false);
     const [seatsToBook, setSeatsToBook] = useState(1);
     const [confirming, setConfirming] = useState(false);
+    const [verifyingCar, setVerifyingCar] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -127,8 +138,17 @@ export default function BookingScreen() {
                         paymentStatus: booking?.payment_status || 'pending',
                         seatsBooked,
                     });
+                    const existingVerify = String(
+                        booking?.car_number_verification_note || ''
+                    ).toLowerCase();
                     if (!cancelled) {
-                        setDetails(nextDetails);
+                        setDetails({
+                            ...nextDetails,
+                            riderCarVerification:
+                                existingVerify === 'correct' || existingVerify === 'different'
+                                    ? (existingVerify as 'correct' | 'different')
+                                    : null,
+                        });
                         setSeatsToBook(seatsBooked);
                         setLoadedBooking(booking);
                         if (booking?.id) setActiveBookingId(String(booking.id));
@@ -311,6 +331,31 @@ export default function BookingScreen() {
         }
     };
 
+    const handleCarNumberVerification = async (status: 'correct' | 'different') => {
+        const id = activeBookingId || bookingId;
+        if (!id) return;
+        setVerifyingCar(true);
+        try {
+            const session = await getSession();
+            if (!session?.phone) {
+                Alert.alert('Login required', 'Please log in again.');
+                return;
+            }
+            await verifyBookingCarNumber(id, session.phone, status);
+            setDetails((prev) => (prev ? { ...prev, riderCarVerification: status } : prev));
+            Alert.alert(
+                'Saved',
+                status === 'correct'
+                    ? 'Thanks! Car number marked as correct.'
+                    : 'Marked as different. Please contact owner before ride.'
+            );
+        } catch (error: any) {
+            Alert.alert('Error', error?.message || 'Could not save verification.');
+        } finally {
+            setVerifyingCar(false);
+        }
+    };
+
     const displayTime = details?.time ? formatRideTime(details.time) : 'Time TBD';
     const paymentStatusLabel =
         details?.paymentStatus === 'paid'
@@ -458,6 +503,43 @@ export default function BookingScreen() {
                     </View>
 
                     <View style={styles.card}>
+                        <Text style={styles.sectionTitle}>Car Number Verification</Text>
+                        <Text style={styles.rowLabel}>Owner car number</Text>
+                        <Text style={styles.rowValue}>{details?.ownerCarNumber || 'Not provided'}</Text>
+                        {details?.ownerCarNumberPhotoUrl ? (
+                            <View style={styles.carPhotoWrap}>
+                                <ProfileAvatar
+                                    name={details.ownerCarNumber}
+                                    photoUrl={details.ownerCarNumberPhotoUrl}
+                                    size={120}
+                                />
+                            </View>
+                        ) : null}
+                        {!isOwnerViewer && (viewOnly || bookingDone) ? (
+                            <View style={styles.verifyRow}>
+                                <TouchableOpacity
+                                    style={[styles.verifyBtn, styles.verifyCorrect]}
+                                    disabled={verifyingCar}
+                                    onPress={() => handleCarNumberVerification('correct')}
+                                >
+                                    <Text style={styles.verifyText}>
+                                        {details?.riderCarVerification === 'correct' ? '✓ Correct' : 'Correct'}
+                                    </Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                    style={[styles.verifyBtn, styles.verifyDifferent]}
+                                    disabled={verifyingCar}
+                                    onPress={() => handleCarNumberVerification('different')}
+                                >
+                                    <Text style={styles.verifyText}>
+                                        {details?.riderCarVerification === 'different' ? '✓ Different' : 'Different'}
+                                    </Text>
+                                </TouchableOpacity>
+                            </View>
+                        ) : null}
+                    </View>
+
+                    <View style={styles.card}>
                         <Text style={styles.sectionTitle}>Payment Details</Text>
                         <View style={styles.paymentRow}>
                             <Text style={styles.paymentLabel}>Price per seat</Text>
@@ -597,6 +679,17 @@ const styles = StyleSheet.create({
         alignItems: 'center',
     },
     callText: { color: '#fff', fontSize: 15, fontWeight: 'bold' },
+    carPhotoWrap: { marginTop: 10, alignItems: 'flex-start' },
+    verifyRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
+    verifyBtn: {
+        flex: 1,
+        borderRadius: 10,
+        paddingVertical: 12,
+        alignItems: 'center',
+    },
+    verifyCorrect: { backgroundColor: '#34a853' },
+    verifyDifferent: { backgroundColor: '#f59e0b' },
+    verifyText: { color: '#fff', fontWeight: '700' },
     paymentRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
     paymentLabel: { fontSize: 14, color: '#666' },
     paymentPrice: { fontSize: 16, fontWeight: 'bold', color: '#333' },

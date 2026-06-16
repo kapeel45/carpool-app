@@ -15,6 +15,8 @@ import {
     mergeSessionFromUser,
     getCarBrands,
     getCarModelsByBrand,
+    uploadCarNumberPhoto,
+    clearCarNumberPhoto,
 } from './config/api';
 import ProfileAvatarPicker from './components/ProfileAvatarPicker';
 import { validateOfficialWorkEmail } from './config/work-email';
@@ -36,15 +38,24 @@ export default function ProfileScreen() {
     const [saving, setSaving] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
     const [profilePhotoUrl, setProfilePhotoUrl] = useState<string | null>(null);
+    const [carNumberPhotoUrl, setCarNumberPhotoUrl] = useState<string | null>(null);
     const [uploadingPhoto, setUploadingPhoto] = useState(false);
+    const [uploadingCarPhoto, setUploadingCarPhoto] = useState(false);
     const [carBrands, setCarBrands] = useState<string[]>([]);
     const [carModels, setCarModels] = useState<string[]>([]);
     const [brandPickerOpen, setBrandPickerOpen] = useState(false);
     const [modelPickerOpen, setModelPickerOpen] = useState(false);
+    const [isCustomBrand, setIsCustomBrand] = useState(false);
+    const [isCustomModel, setIsCustomModel] = useState(false);
+    const [customBrand, setCustomBrand] = useState('');
+    const [customModel, setCustomModel] = useState('');
+
+    const effectiveBrand = isCustomBrand ? customBrand : carBrand;
+    const effectiveModel = isCustomModel ? customModel : carModelName;
 
     const combinedCarModel = useMemo(
-        () => [carBrand.trim(), carModelName.trim()].filter(Boolean).join(' '),
-        [carBrand, carModelName]
+        () => [effectiveBrand.trim(), effectiveModel.trim()].filter(Boolean).join(' '),
+        [effectiveBrand, effectiveModel]
     );
 
     const loadProfile = useCallback(async () => {
@@ -88,13 +99,22 @@ export default function ProfileScreen() {
         if (matchedBrand) {
             setCarBrand(matchedBrand);
             setCarModelName(storedCar.slice(matchedBrand.length).trim());
+            setIsCustomBrand(false);
+            setCustomBrand('');
+            setIsCustomModel(false);
+            setCustomModel('');
         } else {
             setCarBrand('');
-            setCarModelName(storedCar);
+            setCarModelName('');
+            setIsCustomBrand(true);
+            setCustomBrand(storedCar ? storedCar.split(' ')[0] : '');
+            setIsCustomModel(true);
+            setCustomModel(storedCar ? storedCar.split(' ').slice(1).join(' ') : '');
         }
         setCarNumber(merged.carNumber || '');
         setCarColor(merged.carColor || '');
         setProfilePhotoUrl(merged.profilePhotoUrl || null);
+        setCarNumberPhotoUrl(merged.carNumberPhotoUrl || null);
         setLoading(false);
     }, [router]);
 
@@ -156,6 +176,49 @@ export default function ProfileScreen() {
         ]);
     };
 
+    const handleCarNumberPhotoSelected = async (uri: string) => {
+        if (!session?.userId) return;
+        setCarNumberPhotoUrl(uri);
+        setUploadingCarPhoto(true);
+        try {
+            const { url } = await uploadCarNumberPhoto(session.userId, uri);
+            const nextSession = { ...session, carNumberPhotoUrl: url || uri };
+            await saveSession(nextSession);
+            setSession(nextSession);
+            setCarNumberPhotoUrl(url || uri);
+        } catch (error: any) {
+            setCarNumberPhotoUrl(session.carNumberPhotoUrl || null);
+            Alert.alert('Error', error?.message || 'Could not upload car number photo.');
+        } finally {
+            setUploadingCarPhoto(false);
+        }
+    };
+
+    const handleRemoveCarNumberPhoto = () => {
+        if (!session?.userId) return;
+        Alert.alert('Remove car number photo?', 'You can upload it again anytime.', [
+            { text: 'Cancel', style: 'cancel' },
+            {
+                text: 'Remove',
+                style: 'destructive',
+                onPress: async () => {
+                    setUploadingCarPhoto(true);
+                    try {
+                        await clearCarNumberPhoto(session.userId);
+                        const nextSession = { ...session, carNumberPhotoUrl: null };
+                        await saveSession(nextSession);
+                        setSession(nextSession);
+                        setCarNumberPhotoUrl(null);
+                    } catch (error: any) {
+                        Alert.alert('Error', error?.message || 'Could not remove car number photo.');
+                    } finally {
+                        setUploadingCarPhoto(false);
+                    }
+                },
+            },
+        ]);
+    };
+
     const handleSave = async () => {
         if (!name) {
             Alert.alert('Required', 'Please enter your name.');
@@ -211,6 +274,7 @@ export default function ProfileScreen() {
                 carModel: nextCarModel,
                 carNumber,
                 carColor,
+                carNumberPhotoUrl,
             };
             await saveSession(nextSession);
             setSession(nextSession);
@@ -387,6 +451,7 @@ export default function ProfileScreen() {
                                         carModel: combinedCarModel,
                                         carNumber,
                                         carColor,
+                                        carNumberPhotoUrl,
                                     };
                                     await saveSession(pendingSession);
                                     setSession(pendingSession);
@@ -421,28 +486,48 @@ export default function ProfileScreen() {
                     <Text style={styles.sectionTitle}>Car Details</Text>
                     <Text style={styles.cardSub}>Required to offer rides</Text>
                     <Text style={styles.label}>Car Brand</Text>
-                    <TouchableOpacity
-                        style={[styles.input, styles.selectInput, !isEditing && styles.inputReadOnly]}
-                        disabled={!isEditing}
-                        onPress={() => setBrandPickerOpen(true)}
-                    >
-                        <Text style={carBrand ? styles.selectValue : styles.selectPlaceholder}>
-                            {carBrand || 'Select brand'}
-                        </Text>
-                    </TouchableOpacity>
+                    {isEditing && isCustomBrand ? (
+                        <TextInput
+                            style={styles.input}
+                            placeholder="Enter custom brand"
+                            placeholderTextColor="#999"
+                            value={customBrand}
+                            onChangeText={setCustomBrand}
+                        />
+                    ) : (
+                        <TouchableOpacity
+                            style={[styles.input, styles.selectInput, !isEditing && styles.inputReadOnly]}
+                            disabled={!isEditing}
+                            onPress={() => setBrandPickerOpen(true)}
+                        >
+                            <Text style={effectiveBrand ? styles.selectValue : styles.selectPlaceholder}>
+                                {effectiveBrand || 'Select brand'}
+                            </Text>
+                        </TouchableOpacity>
+                    )}
                     <Text style={styles.label}>Car Model</Text>
-                    <TouchableOpacity
-                        style={[styles.input, styles.selectInput, !isEditing && styles.inputReadOnly]}
-                        disabled={!isEditing || !carBrand}
-                        onPress={async () => {
-                            await loadModelsForBrand(carBrand);
-                            setModelPickerOpen(true);
-                        }}
-                    >
-                        <Text style={carModelName ? styles.selectValue : styles.selectPlaceholder}>
-                            {carModelName || (carBrand ? 'Select model' : 'Select brand first')}
-                        </Text>
-                    </TouchableOpacity>
+                    {isEditing && isCustomModel ? (
+                        <TextInput
+                            style={styles.input}
+                            placeholder="Enter custom model"
+                            placeholderTextColor="#999"
+                            value={customModel}
+                            onChangeText={setCustomModel}
+                        />
+                    ) : (
+                        <TouchableOpacity
+                            style={[styles.input, styles.selectInput, !isEditing && styles.inputReadOnly]}
+                            disabled={!isEditing || !effectiveBrand}
+                            onPress={async () => {
+                                if (!isCustomBrand) await loadModelsForBrand(carBrand);
+                                setModelPickerOpen(true);
+                            }}
+                        >
+                            <Text style={effectiveModel ? styles.selectValue : styles.selectPlaceholder}>
+                                {effectiveModel || (effectiveBrand ? 'Select model' : 'Select brand first')}
+                            </Text>
+                        </TouchableOpacity>
+                    )}
                     <Text style={styles.label}>Car Number</Text>
                     <TextInput
                         style={[styles.input, !isEditing && styles.inputReadOnly]}
@@ -462,6 +547,18 @@ export default function ProfileScreen() {
                         onChangeText={setCarColor}
                         editable={isEditing}
                     />
+                    <Text style={styles.label}>Car Number Photo</Text>
+                    <ProfileAvatarPicker
+                        name={carNumber || 'CAR'}
+                        photoUrl={carNumberPhotoUrl}
+                        uploading={uploadingCarPhoto}
+                        onPhotoSelected={handleCarNumberPhotoSelected}
+                        onRemovePhoto={handleRemoveCarNumberPhoto}
+                        size={84}
+                    />
+                    <Text style={styles.hint}>
+                        Upload a clear photo of your number plate so riders can verify the car.
+                    </Text>
                 </View>
 
                 <View style={[styles.card, styles.statusCard]}>
@@ -527,13 +624,29 @@ export default function ProfileScreen() {
                     <View style={styles.modalCard}>
                         <Text style={styles.modalTitle}>Select Car Brand</Text>
                         <ScrollView style={styles.modalList}>
+                            <TouchableOpacity
+                                style={styles.modalItem}
+                                onPress={() => {
+                                    setIsCustomBrand(true);
+                                    setCarBrand('');
+                                    setIsCustomModel(true);
+                                    setCarModelName('');
+                                    setBrandPickerOpen(false);
+                                }}
+                            >
+                                <Text style={styles.modalItemText}>+ Enter custom brand</Text>
+                            </TouchableOpacity>
                             {carBrands.map((brand) => (
                                 <TouchableOpacity
                                     key={brand}
                                     style={styles.modalItem}
                                     onPress={async () => {
+                                        setIsCustomBrand(false);
+                                        setCustomBrand('');
                                         setCarBrand(brand);
                                         setCarModelName('');
+                                        setIsCustomModel(false);
+                                        setCustomModel('');
                                         await loadModelsForBrand(brand);
                                         setBrandPickerOpen(false);
                                     }}
@@ -554,11 +667,23 @@ export default function ProfileScreen() {
                     <View style={styles.modalCard}>
                         <Text style={styles.modalTitle}>Select {carBrand || 'Car'} Model</Text>
                         <ScrollView style={styles.modalList}>
+                            <TouchableOpacity
+                                style={styles.modalItem}
+                                onPress={() => {
+                                    setIsCustomModel(true);
+                                    setCarModelName('');
+                                    setModelPickerOpen(false);
+                                }}
+                            >
+                                <Text style={styles.modalItemText}>+ Enter custom model</Text>
+                            </TouchableOpacity>
                             {carModels.map((model) => (
                                 <TouchableOpacity
                                     key={model}
                                     style={styles.modalItem}
                                     onPress={() => {
+                                        setIsCustomModel(false);
+                                        setCustomModel('');
                                         setCarModelName(model);
                                         setModelPickerOpen(false);
                                     }}

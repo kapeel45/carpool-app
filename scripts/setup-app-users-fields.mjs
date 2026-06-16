@@ -133,6 +133,20 @@ const APP_USER_FIELDS = [
         },
     },
     {
+        field: 'car_number_photo',
+        type: 'uuid',
+        meta: {
+            interface: 'file-image',
+            special: ['file'],
+            note: 'Car number plate photo for rider verification',
+        },
+        schema: {
+            is_nullable: true,
+            foreign_key_table: 'directus_files',
+            foreign_key_column: 'id',
+        },
+    },
+    {
         field: 'total_rides',
         type: 'integer',
         meta: { interface: 'input', hidden: true },
