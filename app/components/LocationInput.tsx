@@ -43,7 +43,11 @@ export default function LocationInput({
     }, [initialValue, scrollInputToStart]);
 
     const handleClear = () => {
-        ref.current?.clear();
+        // `clear()` alone is flaky on some RN + GooglePlacesAutocomplete builds.
+        ref.current?.clear?.();
+        ref.current?.setAddressText?.('');
+        textInputRef.current?.clear();
+        textInputRef.current?.setNativeProps?.({ selection: { start: 0, end: 0 } });
         onLocationSelect({ address: '', coords: null });
     };
 
@@ -157,6 +161,7 @@ export default function LocationInput({
                     multiline: false,
                     textAlign: 'left',
                     onFocus: scrollInputToStart,
+                    onBlur: scrollInputToStart,
                 }}
                 renderRow={(data) => (
                     <View style={styles.suggestionRow}>

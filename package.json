@@ -7,6 +7,7 @@
     "reset-project": "node ./scripts/reset-project.js",
     "clear-directus": "node ./scripts/clear-directus.mjs",
     "setup-directus-fields": "node ./scripts/setup-app-users-fields.mjs",
+    "setup-car-catalog": "node ./scripts/setup-car-catalog.mjs",
     "setup-notifications": "node ./scripts/setup-notifications.mjs",
     "setup-ride-geo": "node ./scripts/setup-ride-geo-fields.mjs",
     "setup-pickup-live": "node ./scripts/setup-pickup-live.mjs",

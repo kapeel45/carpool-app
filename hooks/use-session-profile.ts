@@ -11,18 +11,27 @@ export function useSessionProfile(refreshOnFocus = true) {
     const refresh = useCallback(async () => {
         setLoading(true);
         try {
-            const session = refreshOnFocus
-                ? (await refreshSessionFromServer()) || (await getSession())
-                : await getSession();
-
-            if (session?.loggedIn) {
+            // Paint avatar immediately from cached session, then refresh in background.
+            const cached = await getSession();
+            if (cached?.loggedIn) {
                 setLoggedIn(true);
-                setName(session.name?.trim() || '');
-                setPhotoUrl(session.profilePhotoUrl || null);
+                setName(cached.name?.trim() || '');
+                setPhotoUrl(cached.profilePhotoUrl || null);
             } else {
                 setLoggedIn(false);
                 setName('');
                 setPhotoUrl(null);
+            }
+
+            setLoading(false);
+
+            if (!refreshOnFocus || !cached?.loggedIn) return;
+
+            const fresh = await refreshSessionFromServer();
+            if (fresh?.loggedIn) {
+                setLoggedIn(true);
+                setName(fresh.name?.trim() || '');
+                setPhotoUrl(fresh.profilePhotoUrl || null);
             }
         } catch {
             const session = await getSession();

@@ -1,3 +1,4 @@
+import { useUserStats } from '@/hooks/use-user-stats';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
@@ -5,9 +6,8 @@ import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import NotificationBell from '../components/NotificationBell';
 import ProfileNavButton from '../components/ProfileNavButton';
-import { getFuelPrices, getDisplayName } from '../config/api';
+import { getDisplayName, getFuelPrices } from '../config/api';
 import { getSession } from '../config/session';
-import { useUserStats } from '@/hooks/use-user-stats';
 
 export default function HomeScreen() {
   const router = useRouter();

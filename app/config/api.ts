@@ -1451,8 +1451,9 @@ export const getUserStats = async (phone: string): Promise<UserStats> => {
             saved,
         };
     } catch (error) {
-        console.error('getUserStats failed:', error);
-        throw error;
+        // Keep dashboard usable when backend is temporarily unreachable.
+        console.warn('getUserStats failed, returning empty stats:', error);
+        return { ridesTaken: 0, ridesOffered: 0, saved: 0 };
     }
 };
 
@@ -1563,8 +1564,165 @@ export const getUserOfferedRides = async (phone: string) => {
 };
 
 export const getFuelPrices = async () => {
-    const response = await api.get('/items/fuel_prices');
-    return response.data.data;
+    const fallbackDate = new Date().toLocaleDateString('en-IN');
+    const fallback = [
+        { id: 'fallback-petrol', fuel_type: 'Petrol', price: 105, last_updated: fallbackDate },
+        { id: 'fallback-diesel', fuel_type: 'Diesel', price: 92, last_updated: fallbackDate },
+        { id: 'fallback-cng', fuel_type: 'CNG', price: 78, last_updated: fallbackDate },
+    ];
+    try {
+        const response = await api.get('/items/fuel_prices', { timeout: 8000 });
+        const rows = response.data?.data;
+        if (!Array.isArray(rows) || rows.length === 0) return fallback;
+        return rows;
+    } catch (error) {
+        console.warn('getFuelPrices failed; using fallback values:', error);
+        return fallback;
+    }
+};
+
+const CAR_CATALOG_FALLBACK: Array<{ brand: string; model: string }> = [
+    { brand: 'Maruti Suzuki', model: 'Alto K10' },
+    { brand: 'Maruti Suzuki', model: 'Baleno' },
+    { brand: 'Maruti Suzuki', model: 'Brezza' },
+    { brand: 'Maruti Suzuki', model: 'Celerio' },
+    { brand: 'Maruti Suzuki', model: 'Dzire' },
+    { brand: 'Maruti Suzuki', model: 'Ertiga' },
+    { brand: 'Maruti Suzuki', model: 'Fronx' },
+    { brand: 'Maruti Suzuki', model: 'Grand Vitara' },
+    { brand: 'Maruti Suzuki', model: 'Ignis' },
+    { brand: 'Maruti Suzuki', model: 'Invicto' },
+    { brand: 'Maruti Suzuki', model: 'Jimny' },
+    { brand: 'Maruti Suzuki', model: 'S-Presso' },
+    { brand: 'Maruti Suzuki', model: 'Swift' },
+    { brand: 'Maruti Suzuki', model: 'Wagon R' },
+    { brand: 'Maruti Suzuki', model: 'XL6' },
+    { brand: 'Hyundai', model: 'Aura' },
+    { brand: 'Hyundai', model: 'Creta' },
+    { brand: 'Hyundai', model: 'Exter' },
+    { brand: 'Hyundai', model: 'Grand i10 Nios' },
+    { brand: 'Hyundai', model: 'Ioniq 5' },
+    { brand: 'Hyundai', model: 'Tucson' },
+    { brand: 'Hyundai', model: 'Venue' },
+    { brand: 'Hyundai', model: 'Verna' },
+    { brand: 'Hyundai', model: 'i20' },
+    { brand: 'Tata', model: 'Altroz' },
+    { brand: 'Tata', model: 'Curvv' },
+    { brand: 'Tata', model: 'Harrier' },
+    { brand: 'Tata', model: 'Nexon' },
+    { brand: 'Tata', model: 'Punch' },
+    { brand: 'Tata', model: 'Safari' },
+    { brand: 'Tata', model: 'Tiago' },
+    { brand: 'Tata', model: 'Tigor' },
+    { brand: 'Mahindra', model: 'Bolero' },
+    { brand: 'Mahindra', model: 'Bolero Neo' },
+    { brand: 'Mahindra', model: 'Scorpio N' },
+    { brand: 'Mahindra', model: 'Scorpio Classic' },
+    { brand: 'Mahindra', model: 'Thar' },
+    { brand: 'Mahindra', model: 'XUV 3XO' },
+    { brand: 'Mahindra', model: 'XUV400' },
+    { brand: 'Mahindra', model: 'XUV700' },
+    { brand: 'Kia', model: 'Carens' },
+    { brand: 'Kia', model: 'Carnival' },
+    { brand: 'Kia', model: 'Seltos' },
+    { brand: 'Kia', model: 'Sonet' },
+    { brand: 'Kia', model: 'EV6' },
+    { brand: 'Toyota', model: 'Camry' },
+    { brand: 'Toyota', model: 'Fortuner' },
+    { brand: 'Toyota', model: 'Glanza' },
+    { brand: 'Toyota', model: 'Hilux' },
+    { brand: 'Toyota', model: 'Hyryder' },
+    { brand: 'Toyota', model: 'Innova Crysta' },
+    { brand: 'Toyota', model: 'Innova Hycross' },
+    { brand: 'Toyota', model: 'Rumion' },
+    { brand: 'Honda', model: 'Amaze' },
+    { brand: 'Honda', model: 'City' },
+    { brand: 'Honda', model: 'City e:HEV' },
+    { brand: 'Honda', model: 'Elevate' },
+    { brand: 'Skoda', model: 'Kodiaq' },
+    { brand: 'Skoda', model: 'Kushaq' },
+    { brand: 'Skoda', model: 'Slavia' },
+    { brand: 'Volkswagen', model: 'Taigun' },
+    { brand: 'Volkswagen', model: 'Tiguan' },
+    { brand: 'Volkswagen', model: 'Virtus' },
+    { brand: 'Renault', model: 'Kiger' },
+    { brand: 'Renault', model: 'Kwid' },
+    { brand: 'Renault', model: 'Triber' },
+    { brand: 'Nissan', model: 'Magnite' },
+    { brand: 'MG', model: 'Astor' },
+    { brand: 'MG', model: 'Comet EV' },
+    { brand: 'MG', model: 'Gloster' },
+    { brand: 'MG', model: 'Hector' },
+    { brand: 'MG', model: 'Hector Plus' },
+    { brand: 'MG', model: 'ZS EV' },
+    { brand: 'BYD', model: 'Atto 3' },
+    { brand: 'BYD', model: 'e6' },
+    { brand: 'BYD', model: 'Seal' },
+    { brand: 'Jeep', model: 'Compass' },
+    { brand: 'Jeep', model: 'Meridian' },
+    { brand: 'Citroen', model: 'Basalt' },
+    { brand: 'Citroen', model: 'C3' },
+    { brand: 'Citroen', model: 'C3 Aircross' },
+    { brand: 'Citroen', model: 'eC3' },
+    { brand: 'BMW', model: '2 Series Gran Coupe' },
+    { brand: 'BMW', model: '3 Series' },
+    { brand: 'BMW', model: '5 Series' },
+    { brand: 'BMW', model: '7 Series' },
+    { brand: 'BMW', model: 'i4' },
+    { brand: 'BMW', model: 'iX' },
+    { brand: 'BMW', model: 'X1' },
+    { brand: 'BMW', model: 'X3' },
+    { brand: 'BMW', model: 'X5' },
+    { brand: 'Mercedes-Benz', model: 'A-Class Limousine' },
+    { brand: 'Mercedes-Benz', model: 'C-Class' },
+    { brand: 'Mercedes-Benz', model: 'E-Class' },
+    { brand: 'Mercedes-Benz', model: 'EQB' },
+    { brand: 'Mercedes-Benz', model: 'EQS' },
+    { brand: 'Mercedes-Benz', model: 'GLA' },
+    { brand: 'Mercedes-Benz', model: 'GLC' },
+    { brand: 'Mercedes-Benz', model: 'GLE' },
+    { brand: 'Audi', model: 'A4' },
+    { brand: 'Audi', model: 'A6' },
+    { brand: 'Audi', model: 'Q3' },
+    { brand: 'Audi', model: 'Q5' },
+    { brand: 'Audi', model: 'Q7' },
+    { brand: 'Audi', model: 'Q8 e-tron' },
+];
+
+export const getCarCatalog = async (): Promise<Array<{ brand: string; model: string }>> => {
+    try {
+        const response = await api.get('/items/car_catalog', {
+            params: {
+                fields: 'brand,model',
+                sort: 'brand,model',
+                limit: 2000,
+            },
+        });
+        const rows = response.data?.data || [];
+        if (!Array.isArray(rows) || rows.length === 0) return CAR_CATALOG_FALLBACK;
+        return rows;
+    } catch (error) {
+        console.warn('getCarCatalog failed, using fallback:', error);
+        return CAR_CATALOG_FALLBACK;
+    }
+};
+
+export const getCarBrands = async (): Promise<string[]> => {
+    const rows = await getCarCatalog();
+    return [...new Set(rows.map((r) => String(r.brand || '').trim()).filter(Boolean))].sort();
+};
+
+export const getCarModelsByBrand = async (brand: string): Promise<string[]> => {
+    const rows = await getCarCatalog();
+    const normalized = brand.trim().toLowerCase();
+    return [
+        ...new Set(
+            rows
+                .filter((r) => String(r.brand || '').trim().toLowerCase() === normalized)
+                .map((r) => String(r.model || '').trim())
+                .filter(Boolean)
+        ),
+    ].sort();
 };
 
 export const calculateSuggestedPrice = async (

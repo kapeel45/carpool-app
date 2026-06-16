@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ProfileNavButton from '@/app/components/ProfileNavButton';
 import RideOwnerRow from '@/app/components/RideOwnerRow';
 import { getUserBookings, getUserOfferedRides, resolveOwnerInfo } from '@/app/config/api';
-import { refreshSessionFromServer } from '@/app/config/session';
+import { getSession, refreshSessionFromServer } from '@/app/config/session';
 import { useUserStats } from '@/hooks/use-user-stats';
 import type { OwnerInfo } from '@/app/config/api';
 
@@ -74,7 +74,8 @@ export default function AnalyticsScreen() {
         refresh();
         setActivityLoading(true);
         setActivityError(null);
-        getSession().then(async (session) => {
+        refreshSessionFromServer().then(async (refreshedSession) => {
+            const session = refreshedSession || (await getSession());
             if (!session?.phone) {
                 setActivityLoading(false);
                 return;

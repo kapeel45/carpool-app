@@ -65,7 +65,12 @@ export default function OfferRideScreen() {
 
     useEffect(() => {
         const checkVerification = async () => {
-            const session = await refreshSessionFromServer();
+            let session = null;
+            try {
+                session = await refreshSessionFromServer();
+            } catch {
+                session = await getSession();
+            }
             if (!canOfferRides(session)) {
                 const needsEmail = !session?.emailVerified;
                 const needsCar =
@@ -147,9 +152,14 @@ export default function OfferRideScreen() {
         const loadPetrolPrice = async () => {
             try {
                 const prices = await getFuelPrices();
-                const petrol = prices.find((p: any) => p.fuel_type === 'Petrol');
-                if (petrol) setPetrolPrice(petrol.price);
-            } catch (error) {
+                const petrol = prices.find(
+                    (p: any) => String(p.fuel_type || '').toLowerCase() === 'petrol'
+                );
+                const parsed = Number(petrol?.price);
+                if (Number.isFinite(parsed) && parsed > 0) {
+                    setPetrolPrice(parsed);
+                }
+            } catch {
                 console.error('Could not load petrol price');
             }
         };
@@ -281,6 +291,16 @@ export default function OfferRideScreen() {
 
         setLoading(true);
         try {
+            let ownerPhone = normalizePhone(driverPhone || '');
+            if (!ownerPhone) {
+                const latestSession = await getSession();
+                ownerPhone = normalizePhone(latestSession?.phone || '');
+            }
+            if (!ownerPhone) {
+                Alert.alert('Login required', 'Please log in again before publishing your ride.');
+                return;
+            }
+
             let pickupCoords = fromCoords;
             let dropCoords = toCoords;
             if (!pickupCoords) pickupCoords = await geocodeAddress(from);
@@ -318,7 +338,7 @@ export default function OfferRideScreen() {
             } else {
                 await createRide({
                     ...payload,
-                    driver_name: driverPhone,
+                    driver_name: ownerPhone,
                     status: 'active',
                 });
                 Alert.alert('Success 🎉', 'Your ride has been published!', [
@@ -326,9 +346,17 @@ export default function OfferRideScreen() {
                 ]);
             }
         } catch (error: any) {
+            const isNetworkError =
+                !error?.response &&
+                (String(error?.message || '').toLowerCase().includes('network') ||
+                    String(error?.code || '').toLowerCase().includes('network'));
+            const directusUrl =
+                process.env.EXPO_PUBLIC_DIRECTUS_URL || 'your Directus URL from .env';
             const msg =
                 error?.response?.data?.errors?.[0]?.message ||
-                error?.message ||
+                (isNetworkError
+                    ? `Could not reach server. Check internet / Directus URL: ${directusUrl}`
+                    : error?.message) ||
                 'Could not save ride. Try again.';
             console.error('save ride error:', error?.response?.data || error);
             Alert.alert('Error', msg);

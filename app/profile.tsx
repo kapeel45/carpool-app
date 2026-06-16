@@ -1,7 +1,7 @@
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useCallback, useMemo, useState } from 'react';
+import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
     canOfferRides,
@@ -13,6 +13,8 @@ import {
     normalizeEmail,
     assertEmailAvailable,
     mergeSessionFromUser,
+    getCarBrands,
+    getCarModelsByBrand,
 } from './config/api';
 import ProfileAvatarPicker from './components/ProfileAvatarPicker';
 import { validateOfficialWorkEmail } from './config/work-email';
@@ -25,7 +27,8 @@ export default function ProfileScreen() {
     const [session, setSession] = useState<any>(null);
     const [name, setName] = useState('');
     const [email, setEmail] = useState('');
-    const [carModel, setCarModel] = useState('');
+    const [carBrand, setCarBrand] = useState('');
+    const [carModelName, setCarModelName] = useState('');
     const [carNumber, setCarNumber] = useState('');
     const [carColor, setCarColor] = useState('');
     const [gender, setGender] = useState<GenderValue | ''>('');
@@ -34,6 +37,15 @@ export default function ProfileScreen() {
     const [isEditing, setIsEditing] = useState(false);
     const [profilePhotoUrl, setProfilePhotoUrl] = useState<string | null>(null);
     const [uploadingPhoto, setUploadingPhoto] = useState(false);
+    const [carBrands, setCarBrands] = useState<string[]>([]);
+    const [carModels, setCarModels] = useState<string[]>([]);
+    const [brandPickerOpen, setBrandPickerOpen] = useState(false);
+    const [modelPickerOpen, setModelPickerOpen] = useState(false);
+
+    const combinedCarModel = useMemo(
+        () => [carBrand.trim(), carModelName.trim()].filter(Boolean).join(' '),
+        [carBrand, carModelName]
+    );
 
     const loadProfile = useCallback(async () => {
         setLoading(true);
@@ -51,8 +63,7 @@ export default function ProfileScreen() {
             return;
         }
 
-        const hasProfileData =
-            merged.email || merged.carModel || merged.carNumber || merged.name;
+        const hasProfileData = merged.email || merged.carModel || merged.carNumber || merged.name;
         if (!hasProfileData && merged.userId) {
             const direct = await fetchAppUserProfile({
                 userId: merged.userId,
@@ -68,12 +79,33 @@ export default function ProfileScreen() {
         setName(merged.name || '');
         setEmail(merged.email || '');
         setGender((merged.gender as GenderValue) || '');
-        setCarModel(merged.carModel || '');
+        const brands = await getCarBrands();
+        setCarBrands(brands);
+        const storedCar = String(merged.carModel || '').trim();
+        const matchedBrand = brands.find((b) =>
+            storedCar.toLowerCase().startsWith(`${b.toLowerCase()} `)
+        );
+        if (matchedBrand) {
+            setCarBrand(matchedBrand);
+            setCarModelName(storedCar.slice(matchedBrand.length).trim());
+        } else {
+            setCarBrand('');
+            setCarModelName(storedCar);
+        }
         setCarNumber(merged.carNumber || '');
         setCarColor(merged.carColor || '');
         setProfilePhotoUrl(merged.profilePhotoUrl || null);
         setLoading(false);
     }, [router]);
+
+    const loadModelsForBrand = useCallback(async (brand: string) => {
+        if (!brand) {
+            setCarModels([]);
+            return;
+        }
+        const models = await getCarModelsByBrand(brand);
+        setCarModels(models);
+    }, []);
 
     useFocusEffect(
         useCallback(() => {
@@ -142,12 +174,13 @@ export default function ProfileScreen() {
         }
         setSaving(true);
         try {
+            const nextCarModel = combinedCarModel.trim();
             const emailChanged =
                 email && normalizeEmail(email) !== normalizeEmail(session?.email || '');
-            if (!carModel.trim() || !carNumber.trim()) {
+            if (!nextCarModel || !carNumber.trim()) {
                 Alert.alert(
                     'Car details required',
-                    'Enter car model and number to offer rides. These are saved to your profile.'
+                    'Select car brand/model and enter number to offer rides. These are saved to your profile.'
                 );
                 setSaving(false);
                 return;
@@ -155,7 +188,7 @@ export default function ProfileScreen() {
 
             const profileData: Record<string, unknown> = {
                 name,
-                car_model: carModel.trim(),
+                car_model: nextCarModel,
                 car_number: carNumber.trim(),
                 car_color: carColor.trim(),
             };
@@ -175,7 +208,7 @@ export default function ProfileScreen() {
                 gender,
                 email: email ? normalizeEmail(email) : refreshed.email,
                 emailVerified: emailChanged ? false : refreshed.emailVerified,
-                carModel,
+                carModel: nextCarModel,
                 carNumber,
                 carColor,
             };
@@ -341,7 +374,7 @@ export default function ProfileScreen() {
                                         name: name || session.name,
                                         email: normalized,
                                         email_verified: false,
-                                        car_model: carModel,
+                                        car_model: combinedCarModel,
                                         car_number: carNumber,
                                         car_color: carColor,
                                     });
@@ -351,7 +384,7 @@ export default function ProfileScreen() {
                                         name: name || latest.name,
                                         email: normalized,
                                         emailVerified: false,
-                                        carModel,
+                                        carModel: combinedCarModel,
                                         carNumber,
                                         carColor,
                                     };
@@ -387,15 +420,29 @@ export default function ProfileScreen() {
                 <View style={styles.card}>
                     <Text style={styles.sectionTitle}>Car Details</Text>
                     <Text style={styles.cardSub}>Required to offer rides</Text>
+                    <Text style={styles.label}>Car Brand</Text>
+                    <TouchableOpacity
+                        style={[styles.input, styles.selectInput, !isEditing && styles.inputReadOnly]}
+                        disabled={!isEditing}
+                        onPress={() => setBrandPickerOpen(true)}
+                    >
+                        <Text style={carBrand ? styles.selectValue : styles.selectPlaceholder}>
+                            {carBrand || 'Select brand'}
+                        </Text>
+                    </TouchableOpacity>
                     <Text style={styles.label}>Car Model</Text>
-                    <TextInput
-                        style={[styles.input, !isEditing && styles.inputReadOnly]}
-                        placeholder="e.g. Honda City, Maruti Swift"
-                        placeholderTextColor="#999"
-                        value={carModel}
-                        onChangeText={setCarModel}
-                        editable={isEditing}
-                    />
+                    <TouchableOpacity
+                        style={[styles.input, styles.selectInput, !isEditing && styles.inputReadOnly]}
+                        disabled={!isEditing || !carBrand}
+                        onPress={async () => {
+                            await loadModelsForBrand(carBrand);
+                            setModelPickerOpen(true);
+                        }}
+                    >
+                        <Text style={carModelName ? styles.selectValue : styles.selectPlaceholder}>
+                            {carModelName || (carBrand ? 'Select model' : 'Select brand first')}
+                        </Text>
+                    </TouchableOpacity>
                     <Text style={styles.label}>Car Number</Text>
                     <TextInput
                         style={[styles.input, !isEditing && styles.inputReadOnly]}
@@ -419,7 +466,7 @@ export default function ProfileScreen() {
 
                 <View style={[styles.card, styles.statusCard]}>
                     <Text style={styles.sectionTitle}>Ride Offering Status</Text>
-                    {canOfferRides({ ...session, carModel, carNumber }) ? (
+                    {canOfferRides({ ...session, carModel: combinedCarModel, carNumber }) ? (
                         <View style={styles.statusRow}>
                             <Text style={styles.statusIcon}>✅</Text>
                             <View>
@@ -427,7 +474,7 @@ export default function ProfileScreen() {
                                 <Text style={styles.statusSub}>Your profile is verified</Text>
                             </View>
                         </View>
-                    ) : session?.emailVerified && (!carModel.trim() || !carNumber.trim()) ? (
+                    ) : session?.emailVerified && (!combinedCarModel.trim() || !carNumber.trim()) ? (
                         <View style={styles.statusRow}>
                             <Text style={styles.statusIcon}>🚗</Text>
                             <View>
@@ -437,7 +484,7 @@ export default function ProfileScreen() {
                                 </Text>
                             </View>
                         </View>
-                    ) : email && carModel && carNumber ? (
+                    ) : email && combinedCarModel && carNumber ? (
                         <View style={styles.statusRow}>
                             <Text style={styles.statusIcon}>⏳</Text>
                             <View>
@@ -474,6 +521,58 @@ export default function ProfileScreen() {
                     <Text style={styles.logoutText}>Logout</Text>
                 </TouchableOpacity>
             </ScrollView>
+
+            <Modal visible={brandPickerOpen} transparent animationType="fade" onRequestClose={() => setBrandPickerOpen(false)}>
+                <View style={styles.modalBackdrop}>
+                    <View style={styles.modalCard}>
+                        <Text style={styles.modalTitle}>Select Car Brand</Text>
+                        <ScrollView style={styles.modalList}>
+                            {carBrands.map((brand) => (
+                                <TouchableOpacity
+                                    key={brand}
+                                    style={styles.modalItem}
+                                    onPress={async () => {
+                                        setCarBrand(brand);
+                                        setCarModelName('');
+                                        await loadModelsForBrand(brand);
+                                        setBrandPickerOpen(false);
+                                    }}
+                                >
+                                    <Text style={styles.modalItemText}>{brand}</Text>
+                                </TouchableOpacity>
+                            ))}
+                        </ScrollView>
+                        <TouchableOpacity style={styles.modalClose} onPress={() => setBrandPickerOpen(false)}>
+                            <Text style={styles.modalCloseText}>Close</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
+
+            <Modal visible={modelPickerOpen} transparent animationType="fade" onRequestClose={() => setModelPickerOpen(false)}>
+                <View style={styles.modalBackdrop}>
+                    <View style={styles.modalCard}>
+                        <Text style={styles.modalTitle}>Select {carBrand || 'Car'} Model</Text>
+                        <ScrollView style={styles.modalList}>
+                            {carModels.map((model) => (
+                                <TouchableOpacity
+                                    key={model}
+                                    style={styles.modalItem}
+                                    onPress={() => {
+                                        setCarModelName(model);
+                                        setModelPickerOpen(false);
+                                    }}
+                                >
+                                    <Text style={styles.modalItemText}>{model}</Text>
+                                </TouchableOpacity>
+                            ))}
+                        </ScrollView>
+                        <TouchableOpacity style={styles.modalClose} onPress={() => setModelPickerOpen(false)}>
+                            <Text style={styles.modalCloseText}>Close</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
         </View>
     );
 }
@@ -567,6 +666,9 @@ const styles = StyleSheet.create({
         height: 48,
     },
     inputReadOnly: { backgroundColor: '#f9f9f9', color: '#666', borderColor: '#eee' },
+    selectInput: { justifyContent: 'center' },
+    selectValue: { fontSize: 15, color: '#333' },
+    selectPlaceholder: { fontSize: 15, color: '#999' },
     hint: { fontSize: 12, color: '#1a73e8', marginTop: 8 },
     statusRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 8 },
     statusIcon: { fontSize: 28 },
@@ -598,4 +700,31 @@ const styles = StyleSheet.create({
         marginTop: 12,
     },
     verifyButtonText: { color: '#2e7d32', fontWeight: '600', fontSize: 14 },
+    modalBackdrop: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.35)',
+        justifyContent: 'center',
+        padding: 20,
+    },
+    modalCard: {
+        backgroundColor: '#fff',
+        borderRadius: 16,
+        maxHeight: '75%',
+        padding: 16,
+    },
+    modalTitle: { fontSize: 17, fontWeight: '700', color: '#333', marginBottom: 10 },
+    modalList: { marginBottom: 12 },
+    modalItem: {
+        paddingVertical: 12,
+        borderBottomWidth: 1,
+        borderBottomColor: '#f0f0f0',
+    },
+    modalItemText: { fontSize: 15, color: '#333' },
+    modalClose: {
+        backgroundColor: '#1a73e8',
+        borderRadius: 10,
+        paddingVertical: 12,
+        alignItems: 'center',
+    },
+    modalCloseText: { color: '#fff', fontWeight: '700', fontSize: 14 },
 });

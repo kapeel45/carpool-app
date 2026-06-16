@@ -169,7 +169,7 @@ export default function LoginScreen() {
             <View style={styles.header}>
                 <Text style={styles.logo}>🚗</Text>
                 <Text style={styles.title}>CarpoolApp</Text>
-                <Text style={styles.sub}>Pune's smartest commute</Text>
+                <Text style={styles.sub}>Pune&apos;s smartest commute</Text>
             </View>
 
             <View style={styles.form}>
