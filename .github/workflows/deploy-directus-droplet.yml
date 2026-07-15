@@ -1,0 +1,39 @@
+# OPTIONAL — only if you use a Droplet instead of App Platform.
+# App Platform does NOT need this file (it deploys from GitHub natively).
+#
+# Setup:
+# 1. Create a Droplet, install Docker, clone this repo once to /opt/carpool-app
+# 2. In GitHub → Settings → Secrets → Actions, add:
+#      DROPLET_HOST, DROPLET_USER, DROPLET_SSH_KEY
+# 3. On the droplet, put secrets in /opt/carpool-app/directus/.env
+# 4. Push to untested-code (or change the branch below)
+
+name: Deploy Directus to Droplet
+
+on:
+  push:
+    branches: [untested-code]
+    paths:
+      - "directus/**"
+      - ".github/workflows/deploy-directus-droplet.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/carpool-app
+            git fetch origin
+            git checkout untested-code
+            git pull origin untested-code
+            cd directus
+            docker compose pull
+            docker compose up -d --build
+            docker compose ps
