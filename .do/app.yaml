@@ -15,7 +15,7 @@ region: blr
 services:
   - name: directus
     github:
-      repo: YOUR_GITHUB_USER/carpool-app
+      repo: kapeel45/carpool-app
       branch: untested-code
       deploy_on_push: true
     source_dir: directus
